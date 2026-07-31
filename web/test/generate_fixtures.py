@@ -96,8 +96,13 @@ async def main() -> None:
         {"name": "Block", "profile_id": sketched.value, "story_count": 6, "story_height": 3.6},
     )
     package = (await kernel.capabilities.get(SceneExportToken).build()).value
+    manifest = to_manifest(package)
+    # Pinned, so regenerating produces a byte-identical file. Everything else in the manifest is a
+    # function of the model; this one field is a function of the clock, and leaving it live would
+    # make the CI check that fixtures are current fail on every single run.
+    manifest["generatedAt"] = "2026-01-01T00:00:00Z"
     (FIXTURES / "manifest.json").write_text(
-        json.dumps(to_manifest(package), indent=2), encoding="utf-8"
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     await kernel.stop()
 
