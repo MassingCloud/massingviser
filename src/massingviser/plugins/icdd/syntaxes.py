@@ -199,16 +199,22 @@ def from_turtle(source: str | bytes) -> Graph:
             continue
         body.append(line)
 
-    joined = "\n".join(body)
-    for symbol, name in _UNSUPPORTED.items():
-        if symbol in joined:
-            raise RdfError(
-                f"This reader does not support {name} syntax, and refuses it rather than "
-                "dropping what it cannot represent."
-            )
-
     graph = Graph()
-    tokens = _tokenise(joined)
+    tokens = _tokenise("\n".join(body))
+
+    # Checked on the token stream, not the raw text. A regex like `"^(internal|external)$"` is a
+    # literal that happens to contain brackets, and refusing it would reject an ordinary shapes
+    # file -- which is exactly what scanning the source text did.
+    for token in tokens:
+        if token.startswith('"'):
+            continue
+        for symbol, name in _UNSUPPORTED.items():
+            if symbol in token:
+                raise RdfError(
+                    f"This reader does not support {name} syntax, and refuses it rather than "
+                    "dropping what it cannot represent."
+                )
+
     index = 0
     subject: str | None = None
     predicate: str | None = None

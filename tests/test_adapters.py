@@ -726,3 +726,156 @@ async def test_exporting_with_nothing_to_write_says_so():
     result = await kernel.capabilities.get(ExportAdapterToken).write()
     assert not result.ok and "nothing to export" in result.error.message
     await kernel.stop()
+
+
+# ---------------------------------------------------------------------------------------------
+# Instancing
+#
+# The difference between sending a facade and sending a window. Tessellating in local coordinates
+# and keeping the placement separate is what makes it possible; baking world coordinates in, which
+# is the simpler option, throws the shared shape away.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def instanced_ifc(tmp_path_factory):
+    """Twelve walls, all placements of one representation."""
+    if "ifc" not in available():
+        pytest.skip("ifcopenshell not installed")
+    import ifcopenshell
+    import ifcopenshell.api.aggregate
+    import ifcopenshell.api.context
+    import ifcopenshell.api.geometry
+    import ifcopenshell.api.root
+    import ifcopenshell.api.spatial
+    import ifcopenshell.api.unit
+
+    file = ifcopenshell.file(schema="IFC4")
+    project = ifcopenshell.api.root.create_entity(file, ifc_class="IfcProject", name="T")
+    ifcopenshell.api.unit.assign_unit(file)
+    model = ifcopenshell.api.context.add_context(file, context_type="Model")
+    body = ifcopenshell.api.context.add_context(
+        file,
+        context_type="Model",
+        context_identifier="Body",
+        target_view="MODEL_VIEW",
+        parent=model,
+    )
+    site = ifcopenshell.api.root.create_entity(file, ifc_class="IfcSite", name="S")
+    building = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuilding", name="B")
+    storey = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuildingStorey", name="L0")
+    for child, parent in ((site, project), (building, site), (storey, building)):
+        ifcopenshell.api.aggregate.assign_object(file, products=[child], relating_object=parent)
+
+    shared = ifcopenshell.api.geometry.add_wall_representation(
+        file, context=body, length=5.0, height=3.0, thickness=0.2
+    )
+    for index in range(12):
+        wall = ifcopenshell.api.root.create_entity(file, ifc_class="IfcWall", name=f"W{index}")
+        ifcopenshell.api.geometry.assign_representation(file, product=wall, representation=shared)
+        ifcopenshell.api.geometry.edit_object_placement(
+            file,
+            product=wall,
+            matrix=np.array(
+                [[1, 0, 0, index * 7.0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float
+            ),
+        )
+        ifcopenshell.api.spatial.assign_container(file, products=[wall], relating_structure=storey)
+
+    path = tmp_path_factory.mktemp("instanced") / "walls.ifc"
+    file.write(str(path))
+    return str(path)
+
+
+@ifc_only
+def test_a_placement_matrix_is_read_column_major(instanced_ifc):
+    """Translation at 12-14, as everywhere else here. Transposed loads fine and is in the wrong place."""
+    model = load("ifc").open_ifc(instanced_ifc, model_id="m1")
+    offsets = sorted(round(element.transform[12], 3) for element in model.elements)
+    assert offsets == [round(index * 7.0, 3) for index in range(12)]
+    assert all(element.transform[15] == 1.0 for element in model.elements)
+
+
+@ifc_only
+def test_world_vertices_still_come_out_placed(instanced_ifc):
+    """Nothing that reasons about space may notice that tessellation moved to local coordinates."""
+    model = load("ifc").open_ifc(instanced_ifc, model_id="m1")
+    boxes = sorted((e.box for e in model.elements if e.box), key=lambda box: box.min[0])
+    assert [round(float(box.min[0]), 1) for box in boxes] == [index * 7.0 for index in range(12)]
+    # 5 m long, so the last one ends at 77 + 5.
+    assert round(float(boxes[-1].max[0]), 1) == 82.0
+
+
+@ifc_only
+def test_local_vertices_are_shared_and_start_at_the_origin(instanced_ifc):
+    model = load("ifc").open_ifc(instanced_ifc, model_id="m1")
+    assert len({element.representation_id for element in model.elements}) == 1
+    for element in model.elements:
+        assert float(element.local_vertices[:, 0].min()) == pytest.approx(0.0, abs=1e-9)
+
+
+@ifc_only
+def test_twelve_identical_walls_collapse_to_one_shape(instanced_ifc):
+    ifc = load("ifc")
+    source = ifc.IfcModelSource(ifc.open_ifc(instanced_ifc, model_id="m1"))
+    shapes, belongs = source.instances()
+    assert len(shapes) == 1
+    assert len(belongs) == 12
+    assert len(set(belongs.values())) == 1
+
+
+@ifc_only
+async def test_the_scene_sends_one_mesh_and_twelve_placements(instanced_ifc):
+    """The whole point, measured: one buffer, twelve nodes, twelve distinct transforms."""
+    from pathlib import Path as _Path
+
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import SceneExportToken
+    from massingviser.plugins.interop import INTEROP_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    await kernel.commands.execute(
+        INTEROP_COMMANDS.import_payload,
+        {"payload": _Path(instanced_ifc).read_bytes(), "filename": "walls.ifc"},
+    )
+    package = (await kernel.capabilities.get(SceneExportToken).build()).value
+    geometry_payloads = [p for p in package.payloads if p.role == "geometry"]
+    drawable = [node for node in package.nodes if node.geometry]
+
+    assert len(drawable) == 12
+    assert sum(payload.mesh_count for payload in geometry_payloads) == 1
+    # Every node points at the same buffer and the same mesh inside it.
+    assert len({(n.geometry[0].payload_id, n.geometry[0].geometry_index) for n in drawable}) == 1
+    # What makes them twelve walls is the placement.
+    assert sorted(round(node.transform[12], 1) for node in drawable) == [
+        index * 7.0 for index in range(12)
+    ]
+    await kernel.stop()
+
+
+@ifc_only
+async def test_an_instanced_model_exports_without_stacking_at_the_origin(instanced_ifc):
+    """The payload holds the shared shape, so the writer has to place it."""
+    from pathlib import Path as _Path
+
+    from massingviser import build_kernel
+    from massingviser.plugins.interop import INTEROP_COMMANDS, ExportAdapterToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await kernel.commands.execute(
+        INTEROP_COMMANDS.import_payload,
+        {"payload": _Path(instanced_ifc).read_bytes(), "filename": "walls.ifc"},
+    )
+    written = await kernel.capabilities.get(ExportAdapterToken).write()
+    assert written.ok, getattr(written, "error", None)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(written.value)
+        back = load("ifc").open_ifc(str(path), model_id="rt")
+
+    positions = sorted(round(float(e.box.min[0]), 1) for e in back.elements if e.box)
+    assert positions == [index * 7.0 for index in range(12)]
+    await kernel.stop()

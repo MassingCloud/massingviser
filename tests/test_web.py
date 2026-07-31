@@ -361,3 +361,71 @@ def test_a_handler_can_be_built_without_a_kernel_running():
     handler = create_handler(SceneBridge(build_kernel(), loop), web_root=Path("."))
     assert callable(handler)
     loop.close()
+
+
+# ---------------------------------------------------------------------------------------------
+# Shipping the client
+#
+# `pip install massingviser` then `--web` used to serve the API happily and 404 the page it exists
+# to draw. Nothing noticed, because the routes do not read files and the tests passed their own
+# directory in. These are the checks that would have.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_checkout_layout_resolves_to_the_repository_client():
+    from massingviser.web.server import _web_root
+
+    root = _web_root()
+    assert (root / "index.html").is_file()
+    assert (root / "src" / "mvmesh.js").is_file()
+
+
+def test_an_installed_layout_prefers_the_packaged_client(tmp_path, monkeypatch):
+    """A wheel carries the client beside the server; a checkout has it at the repository root."""
+    import massingviser.web.server as module
+
+    package = tmp_path / "massingviser" / "web"
+    (package / "client").mkdir(parents=True)
+    (package / "client" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setattr(module, "__file__", str(package / "server.py"))
+    assert module._web_root() == package / "client"
+
+
+def test_the_client_the_page_asks_for_is_the_client_that_ships():
+    """An import map naming a file the build does not include is a blank page in production."""
+    from massingviser.web.server import _web_root
+
+    root = _web_root()
+    page = (root / "index.html").read_text(encoding="utf-8")
+    for reference in (
+        "./vendor/three.module.min.js",
+        "./vendor/OrbitControls.js",
+        "./src/viewer.js",
+    ):
+        assert reference in page, f"{reference} is not referenced by index.html"
+        assert (root / reference.lstrip("./")).is_file(), f"{reference} is referenced but absent"
+
+
+def test_the_page_loads_nothing_over_the_network():
+    """A viewer that needs the public internet is no use in a site office or behind a proxy."""
+    from massingviser.web.server import _web_root
+
+    page = (_web_root() / "index.html").read_text(encoding="utf-8")
+    for host in ("https://unpkg.com", "https://cdn.", "http://cdn.", "https://esm.sh"):
+        assert host not in page.replace("web/vendor/fetch_vendor.py", ""), f"{host} in index.html"
+
+
+def test_the_vendored_dependency_matches_its_recorded_digest():
+    """Committing bytes is only worth anything if the bytes are checked."""
+    import hashlib
+    import json
+
+    from massingviser.web.server import _web_root
+
+    lock_path = _web_root() / "vendor" / "vendor.lock.json"
+    if not lock_path.is_file():  # a wheel ships the files but not the lock
+        pytest.skip("no vendor lock in this layout")
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    for name, expected in lock["files"].items():
+        data = (lock_path.parent / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == expected["sha256"], name

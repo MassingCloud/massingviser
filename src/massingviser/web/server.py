@@ -31,9 +31,24 @@ from ..geometry import SpatialIndexToken
 from ..kernel import Kernel
 from ..plugins.engine import SceneExportToken, to_manifest
 
-#: Where the static client lives, relative to the repository root. Absent in a wheel that shipped
-#: only the Python package, which is why a missing directory is a 404 rather than a crash.
-WEB_ROOT = Path(__file__).resolve().parents[3] / "web"
+
+def _web_root() -> Path:
+    """Where the static client lives.
+
+    Two layouts, because both are real. An installed package carries the client at
+    ``massingviser/web/client``; a git checkout has it at ``web/`` in the repository root, and that
+    is the copy a contributor edits. Preferring the installed copy and falling back to the checkout
+    means neither has to know about the other.
+    """
+    installed = Path(__file__).resolve().parent / "client"
+    if (installed / "index.html").is_file():
+        return installed
+    return Path(__file__).resolve().parents[3] / "web"
+
+
+#: Resolved once at import. A missing directory is a 404 rather than a crash, so a deployment that
+#: only wants the JSON API is not obliged to ship a browser client at all.
+WEB_ROOT = _web_root()
 
 #: How long a request will wait on the kernel loop before giving up. A request that hangs forever
 #: holds a worker thread, and enough of them stop the server answering at all.

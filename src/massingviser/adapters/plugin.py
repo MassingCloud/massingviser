@@ -113,13 +113,15 @@ class _IfcGeometrySource:
     user already knows is slow, not to the first camera move, which they expect to be instant.
     """
 
-    __slots__ = ("_set", "_refs")
+    __slots__ = ("_set", "_refs", "_belongs")
 
-    def __init__(self, meshes: Mapping[str, Any]) -> None:
+    def __init__(self, shapes: Mapping[str, Any], belongs: Mapping[str, str]) -> None:
         from ..geometry import MESH_ENCODING, build_geometry_payloads
         from ..plugins.engine import PayloadRef, payload_path
 
-        self._set = build_geometry_payloads(meshes)
+        #: GlobalId -> the shape key it is a placement of. Several elements share one.
+        self._belongs = dict(belongs)
+        self._set = build_geometry_payloads(shapes)
         self._refs = tuple(
             PayloadRef(
                 id=payload.id,
@@ -137,10 +139,15 @@ class _IfcGeometrySource:
         return self._refs
 
     def geometry(self) -> Any:
+        """Every element's ladder, resolved through the shape it is a placement of.
+
+        A thousand windows from one family all point at the same payload and the same index here;
+        what makes them a thousand windows is the transform on each node.
+        """
         from ..plugins.engine import GeometryRef
 
-        return {
-            global_id: tuple(
+        ladders = {
+            key: tuple(
                 GeometryRef(
                     payload_id=placement.payload_id,
                     geometry_index=placement.geometry_index,
@@ -149,7 +156,10 @@ class _IfcGeometrySource:
                 )
                 for placement in ladder
             )
-            for global_id, ladder in self._set.placements.items()
+            for key, ladder in self._set.placements.items()
+        }
+        return {
+            global_id: ladders[key] for global_id, key in self._belongs.items() if key in ladders
         }
 
     def read(self, payload_id: str) -> bytes | None:
@@ -174,6 +184,12 @@ def _export_elements(context: PluginContext) -> list[Any]:
     for provided in context.capabilities.get_all(SceneNodeSourceToken):
         for node in provided.value.nodes():
             vertices, faces = meshes.get(node.global_id, (None, None))
+            # The payload holds the *shared* shape, so the node's placement has to be applied
+            # before writing. Skipping this would stack every instance of a family at the origin.
+            if vertices is not None and node.transform:
+                from .ifc import place
+
+                vertices = place(vertices, node.transform)
             flat = {
                 f"{pset}.{key}": value
                 for pset, values in (node.property_sets or {}).items()
@@ -245,14 +261,14 @@ def _publish_model(context: PluginContext, ifc_module: Any, model: Any, model_id
     ):
         context.capabilities.provide(token, source, version=PLUGIN_VERSION, priority=10)
 
-    meshes = source.meshes()
-    if meshes:
+    shapes, belongs = source.instances()
+    if shapes:
         # The expensive half, done once at import. Tessellation already happened when the file was
         # parsed; this decimates, chunks and content-addresses it, so what reaches a client is a
         # budget rather than a building.
         context.capabilities.provide(
             GeometryPayloadSourceToken,
-            _IfcGeometrySource(meshes),
+            _IfcGeometrySource(shapes, belongs),
             version=PLUGIN_VERSION,
             priority=10,
         )

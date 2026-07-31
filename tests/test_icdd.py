@@ -43,9 +43,12 @@ from massingviser.plugins.icdd import (
     link_type_by_iri,
     load,
     parse,
+    parse_shapes,
     serialise,
+    shacl_validate,
     to_jsonld,
     to_turtle,
+    unsupported_parameters,
     validate_container,
     write_container,
 )
@@ -644,3 +647,171 @@ def test_an_algorithm_named_with_no_digest_is_flagged():
 def test_a_container_that_declares_no_checksum_is_still_valid():
     """Checksums are optional in ISO 21597; absence is not a defect."""
     assert _container_with(Document(id="d1", name="M", filename="m.ifc")).ok
+
+
+# ---------------------------------------------------------------------------------------------
+# SHACL Core
+#
+# A subset, and the property that keeps it honest is that it says so. An engine that skips a
+# constraint and returns "conforms" has reported on a shape it never checked.
+# ---------------------------------------------------------------------------------------------
+
+SHAPES = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ct: <urn:ct:> .
+ct:DocShape a sh:NodeShape ;
+    sh:targetClass ct:Document ;
+    sh:property ct:nameRule ;
+    sh:property ct:versionRule ;
+    sh:property ct:kindRule .
+ct:nameRule sh:path ct:name ; sh:minCount 1 ; sh:maxCount 1 .
+ct:versionRule sh:path ct:version ; sh:minInclusive 1 ; sh:severity sh:Warning .
+ct:kindRule sh:path ct:kind ; sh:in "internal" ; sh:in "external" .
+"""
+
+DATA = """
+@prefix ct: <urn:ct:> .
+ct:d1 a ct:Document ; ct:name "Model" ; ct:version 3 ; ct:kind "internal" .
+ct:d2 a ct:Document ; ct:version 0 ; ct:kind "nonsense" .
+ct:d3 a ct:Document ; ct:name "A" ; ct:name "B" ; ct:version 5 ; ct:kind "external" .
+"""
+
+
+def _run(data=DATA, shapes=SHAPES):
+    return shacl_validate(from_turtle(data), from_turtle(shapes))
+
+
+def test_a_conforming_graph_conforms():
+    only_good = '@prefix ct: <urn:ct:> .\nct:d1 a ct:Document ; ct:name "M" ; ct:version 3 ; ct:kind "internal" .\n'
+    report = _run(only_good)
+    assert report.conforms and report.complete
+    assert report.results == ()
+
+
+def test_every_targeted_node_is_visited_once():
+    report = _run()
+    assert report.shapes_run == 1
+    assert report.focus_nodes == 3
+
+
+def test_a_missing_required_property_is_a_violation():
+    failure = next(r for r in _run().results if r.constraint == "minCount")
+    assert failure.focus == "urn:ct:d2"
+    assert failure.severity == "violation"
+    assert "at least 1" in failure.message
+
+
+def test_a_repeated_single_valued_property_is_a_violation():
+    failure = next(r for r in _run().results if r.constraint == "maxCount")
+    assert failure.focus == "urn:ct:d3"
+    assert "at most 1" in failure.message
+
+
+def test_a_value_outside_an_enumeration_is_named():
+    failure = next(r for r in _run().results if r.constraint == "in")
+    assert "nonsense" in failure.message
+
+
+def test_severity_is_honoured_and_a_warning_does_not_stop_conformance():
+    """Per the spec: only violations stop a graph conforming."""
+    report = _run()
+    warning = next(r for r in report.results if r.constraint == "minInclusive")
+    assert warning.severity == "warning"
+
+    warnings_only = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path ct:version ; sh:minInclusive 99 ; sh:severity sh:Warning .
+"""
+    lenient = _run(shapes=warnings_only)
+    assert lenient.results and lenient.conforms
+
+
+def test_a_shape_message_replaces_the_generated_one():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path ct:name ; sh:minCount 1 ; sh:message "Every document needs a name." .
+"""
+    failure = next(r for r in _run(shapes=shapes).results if r.focus == "urn:ct:d2")
+    assert failure.message == "Every document needs a name."
+
+
+def test_a_deactivated_shape_is_not_run():
+    shapes = SHAPES.replace(
+        "ct:DocShape a sh:NodeShape ;", 'ct:DocShape a sh:NodeShape ; sh:deactivated "true" ;'
+    )
+    report = _run(shapes=shapes)
+    assert report.shapes_run == 0 and report.results == ()
+
+
+def test_datatype_and_node_kind_are_checked():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path ct:kind ; sh:nodeKind sh:IRI .
+"""
+    report = _run(shapes=shapes)
+    assert all(r.constraint == "nodeKind" for r in report.results)
+    assert report.results  # every kind here is a literal, so every one fails
+
+
+def test_a_pattern_constraint_is_applied():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path ct:kind ; sh:pattern "^(internal|external)$" .
+"""
+    failures = _run(shapes=shapes).results
+    assert len(failures) == 1 and failures[0].focus == "urn:ct:d2"
+
+
+def test_a_class_constraint_follows_the_type_of_the_value():
+    data = """
+@prefix ct: <urn:ct:> .
+ct:c1 a ct:Container ; ct:holds ct:d1 ; ct:holds ct:p1 .
+ct:d1 a ct:Document .
+ct:p1 a ct:Party .
+"""
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Container ; sh:property ct:r .
+ct:r sh:path ct:holds ; sh:class ct:Document .
+"""
+    failures = _run(data, shapes).results
+    assert len(failures) == 1
+    assert "urn:ct:p1" in failures[0].message
+
+
+def test_an_unsupported_constraint_is_reported_rather_than_skipped():
+    """The property that makes a subset honest instead of a lie."""
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path ct:name ; sh:minCount 1 ; sh:sparql "SELECT ..." ; sh:qualifiedValueShape ct:x .
+"""
+    report = _run(shapes=shapes)
+    assert not report.complete
+    assert "sparql" in report.unsupported
+    assert "qualifiedValueShape" in report.unsupported
+    # And what it *can* check, it still checks.
+    assert any(r.constraint == "minCount" for r in report.results)
+
+
+def test_a_fully_supported_shape_reports_complete():
+    assert _run().complete
+    assert unsupported_parameters(parse_shapes(from_turtle(SHAPES))) == ()
+
+
+def test_shapes_can_arrive_in_any_syntax():
+    """The engine reads a Graph, so it never learns which file the shapes came out of."""
+    graph = from_turtle(SHAPES)
+    for syntax in SYNTAXES:
+        assert len(parse_shapes(load(dump(graph, syntax), syntax))) == 1

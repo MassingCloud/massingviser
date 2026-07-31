@@ -39,6 +39,35 @@ SPATIAL_CLASSES = frozenset(
     {"IfcProject", "IfcSite", "IfcBuilding", "IfcBuildingStorey", "IfcSpace"}
 )
 
+#: Column-major, translation at indices 12, 13, 14.
+IDENTITY_TRANSFORM: tuple[float, ...] = (
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+)
+
+
+def place(vertices: np.ndarray, transform: Sequence[float]) -> np.ndarray:
+    """Apply a column-major 4x4 to a vertex array."""
+    matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4).T
+    points = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    if not len(points):
+        return points
+    return points @ matrix[:3, :3].T + matrix[:3, 3]
+
 
 @dataclass
 class IfcElement:
@@ -48,9 +77,22 @@ class IfcElement:
     storey_global_id: str | None
     properties: dict[str, Any] = field(default_factory=dict)
     quantities: dict[str, float] = field(default_factory=dict)
-    #: Flat float triples and index triples, in metres. Empty when the element has no geometry.
+    #: World-coordinate triangles, in metres. Empty when the element has no geometry.
+    #:
+    #: Derived by placing ``local_vertices`` with ``transform``. Kept because everything that
+    #: reasons about *space* -- the spatial index, clash, bounds -- needs elements directly
+    #: comparable with each other, and world coordinates are what makes them so.
     vertices: np.ndarray | None = None
     faces: np.ndarray | None = None
+    #: The same triangles in the representation's own frame, shared by every element that uses it.
+    local_vertices: np.ndarray | None = None
+    #: IfcOpenShell's representation id. Elements sharing one are **instances of the same shape**:
+    #: a window family placed a thousand times is one mesh and a thousand placements, and this is
+    #: what says so. Read from the file rather than inferred by comparing geometry, because the
+    #: file already knows and a comparison would have to guess a tolerance.
+    representation_id: int | None = None
+    #: Column-major, translation at 12-14 -- the platform's convention throughout.
+    transform: tuple[float, ...] = IDENTITY_TRANSFORM
 
     @property
     def box(self) -> Aabb | None:
@@ -107,12 +149,14 @@ class IfcModel:
         ]
 
         shapes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        placements: dict[str, tuple[tuple[float, ...], int]] = {}
         if tessellate and products:
-            shapes = _tessellate(self._file, products)
+            shapes = _tessellate(self._file, products, placements)
 
         for product in products:
             global_id = product.GlobalId
-            vertices, faces = shapes.get(global_id, (None, None))
+            local, faces = shapes.get(global_id, (None, None))
+            transform, representation = placements.get(global_id, (IDENTITY_TRANSFORM, None))
             element = IfcElement(
                 global_id=global_id,
                 ifc_class=product.is_a(),
@@ -120,8 +164,11 @@ class IfcModel:
                 storey_global_id=storeys.get(global_id),
                 properties=_scalar_properties(product),
                 quantities=_quantities(product),
-                vertices=vertices,
+                vertices=place(local, transform) if local is not None else None,
                 faces=faces,
+                local_vertices=local,
+                representation_id=representation,
+                transform=transform,
             )
             self._elements.append(element)
             self._by_id[global_id] = element
@@ -191,22 +238,24 @@ def _quantities(product: Any) -> dict[str, float]:
     return out
 
 
-def _tessellate(file: Any, products: Sequence[Any]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Triangulate every product that has geometry, in metres, in world coordinates.
+def _tessellate(
+    file: Any, products: Sequence[Any], placements: dict[str, tuple[tuple[float, ...], int]]
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Triangulate every product that has geometry, in metres, in its own frame.
 
     Uses the multi-threaded iterator rather than ``create_shape`` per element: on a real model the
     difference is minutes.
     """
+    # **Local** coordinates, deliberately, with the placement read separately.
+    #
+    # Asking IfcOpenShell to bake world coordinates in is simpler and throws away the one thing
+    # that makes instancing possible: with world coords on, a window placed a thousand times is a
+    # thousand distinct meshes, because each has been moved. Off, they share a representation id
+    # and differ only by a 4x4 -- so the platform can send one mesh and a thousand transforms.
+    #
+    # World vertices are then computed here, so nothing downstream changes: the spatial index,
+    # clash and bounds still see elements directly comparable with each other.
     settings = ifcopenshell.geom.settings()
-    # World coordinates, so an element's vertices are directly comparable with any other's -- which
-    # is what a shared spatial index needs.
-    try:
-        settings.set("use-world-coords", True)
-    except Exception:  # noqa: BLE001 -- older API spelling
-        try:
-            settings.set(settings.USE_WORLD_COORDS, True)
-        except Exception:  # noqa: BLE001
-            pass
 
     wanted = {product.GlobalId for product in products}
     shapes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -222,7 +271,15 @@ def _tessellate(file: Any, products: Sequence[Any]) -> dict[str, tuple[np.ndarra
             vertices = np.asarray(geometry.verts, dtype=np.float64).reshape(-1, 3)
             faces = np.asarray(geometry.faces, dtype=np.int64).reshape(-1, 3)
             if len(vertices) and len(faces):
+                matrix = tuple(
+                    float(v)
+                    for v in np.asarray(shape.transformation.matrix, dtype=float).reshape(-1)
+                )
                 shapes[global_id] = (vertices, faces)
+                placements[global_id] = (
+                    matrix if len(matrix) == 16 else IDENTITY_TRANSFORM,
+                    int(getattr(geometry, "id", 0) or 0),
+                )
         if not iterator.next():
             break
     return shapes
@@ -373,6 +430,9 @@ class IfcModelSource:
                 level_global_id=element.storey_global_id,
                 parent_global_id=element.storey_global_id,
                 property_sets=_regroup(element.properties),
+                # The placement travels with the node, because the geometry it points at is the
+                # shared representation and not this element's own copy of it.
+                transform=element.transform,
                 relationships=(
                     (SceneRelationship("ContainedIn", element.storey_global_id),)
                     if element.storey_global_id
@@ -405,11 +465,39 @@ class IfcModelSource:
         }
 
     def meshes(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """World-space triangles per element, for anything that reasons about space."""
         return {
             element.global_id: (element.vertices, element.faces)
             for element in self._model.elements
             if element.vertices is not None and element.faces is not None
         }
+
+    def instances(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], dict[str, str]]:
+        """The deduplicated shapes, and which shape each element is a placement of.
+
+        Returns ``({shape key: (local vertices, faces)}, {global id: shape key})``. A model whose
+        windows all come from one family collapses to one mesh here, and the thousand placements
+        travel as 4x4s in the manifest -- which is the whole difference between sending a facade
+        and sending a window.
+        """
+        shapes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        belongs: dict[str, str] = {}
+        for element in self._model.elements:
+            if element.local_vertices is None or element.faces is None:
+                continue
+            # Keyed on the representation the file itself declares. Falling back to the element's
+            # own id keeps a shape that has no representation id from merging with every other one.
+            key = (
+                f"r{element.representation_id}"
+                if element.representation_id
+                else f"e{element.global_id}"
+            )
+            shapes.setdefault(key, (element.local_vertices, element.faces))
+            belongs[element.global_id] = key
+        return shapes, belongs
+
+    def transforms(self) -> dict[str, tuple[float, ...]]:
+        return {element.global_id: element.transform for element in self._model.elements}
 
 
 def _regroup(flat: Mapping[str, Any]) -> dict[str, dict[str, Any]]:

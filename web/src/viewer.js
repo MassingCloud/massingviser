@@ -118,6 +118,7 @@ export class SceneViewer {
     }
     geometry.setIndex(new THREE.BufferAttribute(source.indices, 1));
 
+    const node = this.nodes.get(globalId);
     const existing = this.meshes.get(globalId);
     if (existing) {
       existing.geometry.dispose();
@@ -129,6 +130,13 @@ export class SceneViewer {
         new THREE.MeshLambertMaterial({ color: PALETTE[hash % PALETTE.length] }),
       );
       mesh.userData.globalId = globalId;
+      // The buffer is the *shared* representation; the placement is what makes this element this
+      // element. A thousand windows from one family are one geometry and a thousand matrices --
+      // which is why the transform lives on the node and not baked into the vertices.
+      if (node && node.transform && node.transform.length === 16) {
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.fromArray(node.transform); // column-major, as three.js expects
+      }
       this.meshes.set(globalId, mesh);
       this.scene.add(mesh);
     }
@@ -143,7 +151,9 @@ export class SceneViewer {
       const mesh = this.meshes.get(globalId);
       if (!mesh) continue;
       if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
-      const centre = mesh.geometry.boundingSphere.center;
+      // In world space: the geometry is the shared shape, so its own centre is wherever the
+      // family was authored, not where this instance stands.
+      const centre = mesh.geometry.boundingSphere.center.clone().applyMatrix4(mesh.matrix);
       const level = selectLod(node.geometry, camera.distanceTo(centre));
       if (level && this.currentLod.get(globalId) !== level.lod) {
         work.push(this.upload(globalId, level));

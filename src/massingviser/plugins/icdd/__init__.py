@@ -43,6 +43,17 @@ from .ontology import (
 )
 from .plugin import ICDD_COMMANDS, PLUGIN_ID, IcddToken, create_icdd_plugin, icdd_plugin
 from .rdf import Graph, Iri, Literal, RdfError, Triple, parse, serialise
+from .shacl import (
+    SH,
+    SUPPORTED,
+    NodeShape,
+    PropertyShape,
+    ShaclReport,
+    parse_shapes,
+    unsupported_parameters,
+)
+from .shacl import Result as ShaclResult
+from .shacl import validate as shacl_validate
 from .syntaxes import (
     SYNTAXES,
     dump,
@@ -56,7 +67,16 @@ from .syntaxes import (
 __all__ = [
     "CHECKSUM_ALGORITHMS",
     "CONTAINER_LAYOUT",
+    "SH",
+    "SUPPORTED",
     "SYNTAXES",
+    "NodeShape",
+    "PropertyShape",
+    "ShaclReport",
+    "ShaclResult",
+    "parse_shapes",
+    "shacl_validate",
+    "unsupported_parameters",
     "compute_checksum",
     "dump",
     "from_jsonld",

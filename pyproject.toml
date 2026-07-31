@@ -52,9 +52,17 @@ Repository = "https://github.com/MassingCloud/massingviser"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/massingviser"]
+# The browser client ships inside the package. Without this, `pip install massingviser` then
+# `--web` serves the API happily and 404s the page it is meant to draw -- the routes do not need
+# files, so nothing else would have noticed.
+[tool.hatch.build.targets.wheel.force-include]
+"web/src" = "massingviser/web/client/src"
+"web/vendor/three.module.min.js" = "massingviser/web/client/vendor/three.module.min.js"
+"web/vendor/OrbitControls.js" = "massingviser/web/client/vendor/OrbitControls.js"
+"web/index.html" = "massingviser/web/client/index.html"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["src/massingviser", "tests", "README.md", "LICENSE"]
+only-include = ["src/massingviser", "tests", "web", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

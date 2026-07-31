@@ -26,11 +26,16 @@
       #selection { color: #7fb2ff; word-break: break-all; }
       #error { color: #ff8f8f; white-space: pre-wrap; }
     </style>
+    <!--
+      three.js is vendored under web/vendor/, not loaded from a CDN. A viewer that needs the public
+      internet to draw a building is no use in a site office or behind a corporate proxy, and both
+      are where this would actually be opened. Pinned and checksummed by web/vendor/fetch_vendor.py.
+    -->
     <script type="importmap">
       {
         "imports": {
-          "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
-          "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+          "three": "./vendor/three.module.min.js",
+          "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
         }
       }
     </script>
