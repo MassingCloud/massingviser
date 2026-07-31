@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 631, the Python side
+python -m pytest                          # 633, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**653 tests.** Organised by the claim each defends:
+**655 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -394,7 +394,7 @@ cd web && npm ci && npm run test:all      # 22, the browser side
 | `test_icdd.py` | Exact IRIs, inverse pairing, three syntaxes round-tripping the same triples, checksum verification, DTD refusal, and that SHACL reports every constraint it could not evaluate |
 | `test_adapters.py` | IFC parse/tessellate, IFC **write** and read back at the same size, narrow-phase volume, CRS round trip, LOD budgets |
 | `test_integration.py` | The cross-plugin chain, and undo across a whole session |
-| `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes |
+| `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes, and a cache that cannot be read half-updated |
 | `web/test/mvmesh.test.mjs` | The **JavaScript** reader, against buffers the Python encoder wrote |
 | `web/test/render.test.mjs` | A real server, the real page, headless Chrome, and the framebuffer read back |
 | `test_architecture.py` | The five rules above, by parsing imports |
@@ -406,8 +406,8 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 598 pass, 33 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 631 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 600 pass, 33 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 633 pass |
 | `web` | Node 22 + headless Chrome — fixtures, readers, then pixels | 22 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
