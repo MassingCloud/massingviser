@@ -32,6 +32,12 @@ from .contracts import (
     ScheduleFormat,
     ScheduleImportSummary,
 )
+from .formats import (
+    ScheduleParseError,
+    flatten_predecessors,
+    parse_mspdi,
+    parse_xer,
+)
 
 _REQUIRED_COLUMNS = ("id", "name", "planned_start", "planned_finish")
 
@@ -94,9 +100,10 @@ def _iso(moment: datetime) -> str:
 class ScheduleImportServiceImpl:
     """Reads a programme, and re-reads it without losing the model links.
 
-    ``csv`` and ``json`` only. P6 XER and MS Project XML are the formats a real deployment needs,
-    and both are large, quirky parsers that belong behind this same interface as their own plugin
-    -- stating that is better than shipping a half-parser that mis-reads a calendar.
+    Four formats, all reduced to the same row shape before anything downstream sees them: ``csv``
+    and ``json`` for interchange, ``xer`` for Primavera P6 and ``mspdi`` for MS Project. What the
+    two vendor readers cover, and what they deliberately leave in the file, is documented in
+    ``planning.formats``.
     """
 
     __slots__ = ("_runtime", "_stores")
@@ -106,7 +113,7 @@ class ScheduleImportServiceImpl:
         self._stores = stores
 
     def supported_formats(self) -> tuple[ScheduleFormat, ...]:
-        return ("csv", "json")
+        return ("csv", "json", "xer", "mspdi")
 
     def _rows(
         self, payload: str | bytes, format: ScheduleFormat
@@ -141,6 +148,18 @@ class ScheduleImportServiceImpl:
                     )
                 )
             return ok(list(reader))
+        if format in ("xer", "mspdi"):
+            parser = parse_xer if format == "xer" else parse_mspdi
+            try:
+                return ok(parser(payload))
+            except ScheduleParseError as thrown:
+                return err(
+                    KernelError(
+                        "COMMAND_FAILED",
+                        f"Could not read the {format.upper()} programme: {thrown}",
+                        {"format": format},
+                    )
+                )
         return err(
             KernelError(
                 "COMMAND_FAILED", f'Unsupported schedule format "{format}".', {"format": format}
@@ -207,11 +226,24 @@ class ScheduleImportServiceImpl:
 
         known = {task.id for task in tasks}
         dependencies: list[TaskDependencyRecord] = []
-        for row in rows.value:
-            predecessor = str(row.get("predecessor") or "").strip()
+        # A CSV row names at most one predecessor; a real programme names several, so the vendor
+        # readers put them in a list. Both shapes are flattened to the same pairs here.
+        pairs = [
+            {
+                "successor": str(row.get("id") or "").strip(),
+                "predecessor": str(row.get("predecessor") or "").strip(),
+                "type": str(row.get("dependency_type") or "FS").upper(),
+                "lag": float(row.get("lag") or 0.0),
+            }
+            for row in rows.value
+            if str(row.get("predecessor") or "").strip()
+        ] + flatten_predecessors(rows.value)
+
+        for pair in pairs:
+            predecessor = str(pair.get("predecessor") or "").strip()
             if not predecessor:
                 continue
-            successor = str(row.get("id") or "").strip()
+            successor = str(pair.get("successor") or "").strip()
             if predecessor not in known or successor not in known:
                 # A dependency naming a task that is not in the file is a broken programme, not a
                 # reason to drop the whole import.
@@ -222,8 +254,8 @@ class ScheduleImportServiceImpl:
                     id=f"{predecessor}->{successor}",
                     predecessor_id=predecessor,
                     successor_id=successor,
-                    type=str(row.get("dependency_type") or "FS").upper(),  # type: ignore[arg-type]
-                    lag=float(row.get("lag") or 0.0),
+                    type=str(pair.get("type") or "FS").upper(),  # type: ignore[arg-type]
+                    lag=float(pair.get("lag") or 0.0),
                 )
             )
         return ok((tasks, dependencies, rejected))

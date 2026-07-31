@@ -13,7 +13,9 @@ import numpy as np
 import pytest
 
 from massingviser.geometry import Aabb, Bvh, SceneIndex, frustum_from_matrix
+from massingviser.geometry.normals import compute_shading, face_normals
 from massingviser.geometry.payload import (
+    FLAG_NORMALS,
     FORMAT_VERSION,
     MAGIC,
     MeshInput,
@@ -462,11 +464,12 @@ def test_editing_one_element_rewrites_one_chunk():
     """The claim content addressing exists to make true."""
     vertices, faces = _cube()
     meshes = {f"E{i:02d}": (np.asarray(vertices) + i * 3.0, np.asarray(faces)) for i in range(6)}
-    before = build_geometry_payloads(meshes, lod_budgets=(), chunk_vertices=16)
+    # A shaded cube is 24 vertices, not 8 -- every corner creases -- so two fit in a 48 budget.
+    before = build_geometry_payloads(meshes, lod_budgets=(), chunk_vertices=48)
 
     moved = dict(meshes)
     moved["E03"] = (meshes["E03"][0] + 0.5, meshes["E03"][1])
-    after = build_geometry_payloads(moved, lod_budgets=(), chunk_vertices=16)
+    after = build_geometry_payloads(moved, lod_budgets=(), chunk_vertices=48)
 
     kept = {p.id for p in before.payloads} & {p.id for p in after.payloads}
     assert len(before.payloads) == 3
@@ -518,3 +521,181 @@ def test_an_element_with_no_faces_gets_no_placement():
 
 def test_no_geometry_at_all_produces_no_payloads():
     assert build_geometry_payloads({}).payloads == ()
+
+
+# ---------------------------------------------------------------------------------------------
+# Normals
+#
+# The whole design rests on one claim: a single crease angle shades a box flat and a sphere smooth.
+# These test that claim from both ends, plus the analytic case where the right answer is known --
+# on a unit sphere the correct smooth normal at a vertex is its own position.
+# ---------------------------------------------------------------------------------------------
+
+
+def _cube_solid() -> tuple[np.ndarray, np.ndarray]:
+    vertices, faces = _cube()
+    return np.asarray(vertices), np.asarray(faces)
+
+
+def test_a_box_shades_flat():
+    """Three faces at 90 degrees put the vertex average 54.7 degrees off each -- every corner splits."""
+    vertices, faces = _cube_solid()
+    shaded = compute_shading(vertices, faces)
+    assert shaded.vertex_count == 24  # 8 corners x 3 faces
+    assert len(shaded.faces) == len(faces)
+    # Exactly six distinct normals, one per face of the box, each along an axis.
+    distinct = np.unique(np.round(shaded.normals, 5), axis=0)
+    assert len(distinct) == 6
+    assert np.allclose(np.abs(distinct).sum(axis=1), 1.0)
+
+
+def test_a_sphere_shades_smooth():
+    vertices, faces = _icosphere(3)
+    shaded = compute_shading(vertices, faces)
+    assert shaded.vertex_count == len(vertices)  # nothing split
+
+
+def test_sphere_normals_are_analytically_right():
+    """On a unit sphere the smooth normal at a point is the point. Nothing to trust here."""
+    vertices, faces = _icosphere(3)
+    shaded = compute_shading(vertices, faces)
+    assert np.allclose(shaded.normals, shaded.vertices, atol=0.02)
+
+
+def test_normals_come_out_unit_length():
+    for vertices, faces in (_cube_solid(), _icosphere(2)):
+        shaded = compute_shading(vertices, faces)
+        assert np.allclose(np.linalg.norm(shaded.normals, axis=1), 1.0)
+
+
+def test_a_crease_angle_of_180_never_splits():
+    """The setting is a real dial, and both ends of it behave."""
+    vertices, faces = _cube_solid()
+    shaded = compute_shading(vertices, faces, crease_degrees=180.0)
+    assert shaded.vertex_count == 8
+
+
+def test_a_crease_angle_of_zero_splits_everything():
+    vertices, faces = _icosphere(2)
+    shaded = compute_shading(vertices, faces, crease_degrees=0.0)
+    assert shaded.vertex_count == len(faces) * 3
+
+
+def test_an_impossible_crease_angle_is_refused():
+    vertices, faces = _cube_solid()
+    with pytest.raises(ValueError, match="between 0 and 180"):
+        compute_shading(vertices, faces, crease_degrees=270.0)
+
+
+def test_a_degenerate_triangle_yields_no_nan():
+    """A NaN normal poisons every vertex it touches and the model renders black."""
+    vertices = np.array([(0, 0, 0), (1, 0, 0), (2, 0, 0)], dtype=float)  # collinear
+    shaded = compute_shading(vertices, np.array([(0, 1, 2)]))
+    assert not np.isnan(shaded.normals).any()
+
+
+def test_face_normals_are_area_weighted():
+    """Length is twice the area, which is what makes a sliver count for less than a large face."""
+    vertices = np.array([(0, 0, 0), (2, 0, 0), (0, 2, 0)], dtype=float)
+    normal = face_normals(vertices, np.array([(0, 1, 2)]))[0]
+    assert np.linalg.norm(normal) == pytest.approx(4.0)  # 2 x area, area = 2
+
+
+def test_an_empty_mesh_shades_to_nothing():
+    shaded = compute_shading(np.zeros((0, 3)), np.zeros((0, 3), dtype=int))
+    assert shaded.vertex_count == 0
+
+
+# --- and through the wire format -------------------------------------------------------------
+
+
+def test_a_shaded_payload_carries_a_normal_per_vertex():
+    vertices, faces = _cube_solid()
+    built = build_geometry_payloads({"A": (vertices, faces)})
+    decoded = decode_mesh_batch(built.payloads[0].data)[0]
+    assert decoded.normals is not None
+    assert len(decoded.normals) == len(decoded.vertices)
+    assert np.allclose(np.linalg.norm(decoded.normals, axis=1), 1.0, atol=1e-6)
+
+
+def test_shading_can_be_turned_off():
+    vertices, faces = _cube_solid()
+    built = build_geometry_payloads({"A": (vertices, faces)}, shade=False)
+    decoded = decode_mesh_batch(built.payloads[0].data)[0]
+    assert decoded.normals is None
+    assert len(decoded.vertices) == 8  # unsplit
+
+
+def test_a_shaded_payload_is_a_different_object_from_an_unshaded_one():
+    """Content addressing has to see the normals, or a client caches the wrong buffer."""
+    vertices, faces = _cube_solid()
+    shaded = build_geometry_payloads({"A": (vertices, faces)}).payloads[0]
+    plain = build_geometry_payloads({"A": (vertices, faces)}, shade=False).payloads[0]
+    assert shaded.id != plain.id
+
+
+def test_a_shaded_payload_declares_the_normals_flag():
+    vertices, faces = _cube_solid()
+    built = build_geometry_payloads({"A": (vertices, faces)})
+    flags = struct.unpack("<I", built.payloads[0].data[12:16])[0]
+    assert flags & FLAG_NORMALS
+    plain = build_geometry_payloads({"A": (vertices, faces)}, shade=False)
+    assert not struct.unpack("<I", plain.payloads[0].data[12:16])[0] & FLAG_NORMALS
+
+
+def test_a_payload_is_exactly_the_size_the_shaded_format_says():
+    vertices, faces = _cube_solid()
+    built = build_geometry_payloads({"A": (vertices, faces)})
+    # 32 header + 1 directory entry + 24 vertices x (3 positions + 3 normals) + 36 indices.
+    assert built.payloads[0].byte_length == 32 + 16 + 24 * 3 * 4 * 2 + 36 * 4
+
+
+def test_a_chunk_cannot_be_half_shaded():
+    """The flag is in the header, so a chunk that mixed them could not describe itself."""
+    vertices, faces = _cube_solid()
+    shaded = compute_shading(vertices, faces)
+    with pytest.raises(ValueError, match="every mesh or for none"):
+        encode_mesh_batch(
+            [
+                MeshInput("A", shaded.vertices, shaded.faces, shaded.normals),
+                MeshInput("B", vertices, faces),
+            ]
+        )
+
+
+def test_a_normal_count_that_disagrees_with_the_vertices_is_refused():
+    vertices, faces = _cube_solid()
+    with pytest.raises(ValueError, match="normals for"):
+        encode_mesh_batch([MeshInput("A", vertices, faces, np.zeros((3, 3)))])
+
+
+def test_a_version_1_payload_still_reads():
+    """Older buffers stay readable: the layout is identical minus the normals block."""
+    vertices, faces = _cube_solid()
+    payload = encode_mesh_batch([MeshInput("A", vertices, faces)])
+    v1 = payload.data[:4] + struct.pack("<I", 1) + payload.data[8:]
+    decoded = decode_mesh_batch(v1)
+    assert decoded[0].normals is None
+    assert np.allclose(decoded[0].vertices, vertices)
+
+
+def test_a_future_version_is_refused_rather_than_misread():
+    vertices, faces = _cube_solid()
+    payload = encode_mesh_batch([MeshInput("A", vertices, faces)])
+    future = payload.data[:4] + struct.pack("<I", 99) + payload.data[8:]
+    with pytest.raises(ValueError, match="this build reads"):
+        decode_mesh_batch(future)
+
+
+def test_each_lod_level_is_shaded_from_its_own_geometry():
+    """Reusing level 0's normals would light a simplified surface as though it kept its detail."""
+    vertices, faces = _icosphere(4)
+    built = build_geometry_payloads({"A": (vertices, faces)})
+    assert len(built.placements["A"]) > 1
+    for placement in built.placements["A"]:
+        payload = built.by_id(placement.payload_id)
+        mesh = decode_mesh_batch(payload.data)[placement.geometry_index]
+        assert mesh.normals is not None
+        assert len(mesh.normals) == len(mesh.vertices)
+        # Still a sphere at every level, so the analytic check still holds.
+        assert np.allclose(np.linalg.norm(mesh.normals, axis=1), 1.0, atol=1e-6)

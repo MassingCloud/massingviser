@@ -7,6 +7,7 @@ without ifcopenshell runs the other fifteen families unchanged.
 from __future__ import annotations
 
 import math
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -520,3 +521,208 @@ def test_an_unverified_georeference_says_so_every_time():
         )
     )
     assert surveyed.warnings == ()
+
+
+# ---------------------------------------------------------------------------------------------
+# Writing IFC
+#
+# The round trip is the test that matters: write the model, read it back with this platform's own
+# reader, and check the building that comes out is the one that went in. Anything that only checks
+# "a file was produced" passes for a file full of millimetre-scale rubble.
+# ---------------------------------------------------------------------------------------------
+
+
+@ifc_only
+def test_an_ifc_guid_is_recognised_and_anything_else_is_not():
+    """Identity is preserved only where it legitimately can be, and never faked where it cannot."""
+    write = load("ifc_write")
+    assert write.is_ifc_guid("3vB2YO$MX4xv5uCqZZG05x")
+    assert not write.is_ifc_guid("mass-1:003")  # colons and hyphens are not in IFC's alphabet
+    assert not write.is_ifc_guid("tooshort")
+
+
+@ifc_only
+def test_geometry_written_out_reads_back_at_the_same_size():
+    """The whole point. Units, indices and winding all have to be right for this to hold."""
+    write = load("ifc_write")
+    ifc = load("ifc")
+    vertices = [
+        (0, 0, 0),
+        (4, 0, 0),
+        (4, 2, 0),
+        (0, 2, 0),
+        (0, 0, 3),
+        (4, 0, 3),
+        (4, 2, 3),
+        (0, 2, 3),
+    ]
+    faces = [
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (1, 2, 6),
+        (1, 6, 5),
+        (2, 3, 7),
+        (2, 7, 6),
+        (3, 0, 4),
+        (3, 4, 7),
+    ]
+    payload, summary = write.write_ifc(
+        [write.ExportElement("mass-1:000", "Block", level="L00", vertices=vertices, faces=faces)]
+    )
+    assert summary.elements == 1 and summary.without_geometry == ()
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        model = ifc.open_ifc(str(path), model_id="rt")
+
+    assert len(model) == 1
+    # Metres, not millimetres. `assign_unit()` with no arguments writes mm, and a reader that
+    # honours the file would scale this box to 4 cm.
+    assert model.source_units == "m"
+    box = model.elements[0].box
+    assert tuple(round(float(v), 6) for v in box.min) == (0.0, 0.0, 0.0)
+    assert tuple(round(float(v), 6) for v in box.max) == (4.0, 2.0, 3.0)
+
+
+@ifc_only
+def test_a_platform_id_survives_as_a_property_when_it_cannot_be_a_guid():
+    write = load("ifc_write")
+    ifc = load("ifc")
+    payload, _ = write.write_ifc(
+        [
+            write.ExportElement(
+                "mass-1:003",
+                "Storey 3",
+                level="L03",
+                vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                faces=[(0, 1, 2)],
+            )
+        ]
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        model = ifc.open_ifc(str(path), model_id="rt")
+
+    element = model.elements[0]
+    assert element.global_id != "mass-1:003"  # a real GlobalId was minted
+    assert any(
+        value == "mass-1:003"
+        for key, value in element.properties.items()
+        if key.endswith(write.SOURCE_ID_PROPERTY)
+    )
+
+
+@ifc_only
+def test_an_ifc_guid_that_arrives_is_kept():
+    """A read-write round trip must not renumber the model, or every decision keyed on it is lost."""
+    write = load("ifc_write")
+    ifc = load("ifc")
+    guid = "3vB2YO$MX4xv5uCqZZG05x"
+    payload, _ = write.write_ifc(
+        [
+            write.ExportElement(
+                guid, "Wall", vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)], faces=[(0, 1, 2)]
+            )
+        ]
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        model = ifc.open_ifc(str(path), model_id="rt")
+    assert model.elements[0].global_id == guid
+
+
+@ifc_only
+def test_the_spatial_tree_matches_the_one_that_went_in():
+    write = load("ifc_write")
+    ifc = load("ifc")
+    triangle = ([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)])
+    elements = [
+        write.ExportElement(
+            f"{mass}:{index:03d}",
+            "S",
+            level=f"{mass}:{index:03d}",
+            building=mass,
+            vertices=triangle[0],
+            faces=triangle[1],
+        )
+        for mass in ("mass-1", "mass-2")
+        for index in range(3)
+    ]
+    payload, summary = write.write_ifc(elements)
+    assert summary.buildings == 2
+    assert summary.storeys == 6
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        model = ifc.open_ifc(str(path), model_id="rt")
+    # Every element is contained, and by six distinct storeys rather than one bucket.
+    storeys = {element.storey_global_id for element in model.elements}
+    assert len(storeys) == 6 and None not in storeys
+
+
+@ifc_only
+def test_an_element_with_no_triangles_is_reported_not_dropped():
+    """Arriving in the recipient's viewer as nothing is worse than being absent from the file."""
+    write = load("ifc_write")
+    _, summary = write.write_ifc([write.ExportElement("E1", "Empty", level="L")])
+    assert summary.elements == 1
+    assert summary.without_geometry == (("E1", "no triangles to write"),)
+
+
+@ifc_only
+async def test_the_whole_model_exports_through_the_capability():
+    """End to end: massing becomes triangles, becomes payloads, becomes an IFC file, and reads back."""
+    from massingviser import build_kernel
+    from massingviser.plugins.interop import ExportAdapterToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    sketched = await kernel.commands.execute(
+        MASSING_COMMANDS.sketch_profile,
+        {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], "name": "Block"},
+    )
+    await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {"name": "Block", "profile_id": sketched.value, "story_count": 4, "story_height": 3.5},
+    )
+
+    adapter = kernel.capabilities.get(ExportAdapterToken)
+    assert adapter is not None and adapter.format == "ifc"
+    written = await adapter.write()
+    assert written.ok, getattr(written, "error", None)
+    assert adapter.last_summary.elements == 4
+    assert adapter.last_summary.without_geometry == ()
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "massing.ifc"
+        path.write_bytes(written.value)
+        model = load("ifc").open_ifc(str(path), model_id="rt")
+
+    assert len(model) == 4
+    assert model.source_units == "m"
+    boxes = sorted((e.box for e in model.elements if e.box), key=lambda b: b.min[2])
+    # The footprint that was drawn, at the elevations that were extruded.
+    assert tuple(round(float(v), 3) for v in boxes[0].max)[:2] == (20.0, 10.0)
+    assert [round(float(box.min[2]), 2) for box in boxes] == [0.0, 3.5, 7.0, 10.5]
+    await kernel.stop()
+
+
+@ifc_only
+async def test_exporting_with_nothing_to_write_says_so():
+    from massingviser import build_kernel
+    from massingviser.plugins.interop import ExportAdapterToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    result = await kernel.capabilities.get(ExportAdapterToken).write()
+    assert not result.ok and "nothing to export" in result.error.message
+    await kernel.stop()

@@ -24,6 +24,7 @@ from typing import Any
 #: Adapter name -> the extras that have to be installed for it.
 REQUIREMENTS: Mapping[str, tuple[str, ...]] = {
     "ifc": ("ifcopenshell", "numpy"),
+    "ifc_write": ("ifcopenshell", "numpy"),
     "solids": ("trimesh", "manifold3d", "numpy"),
     "crs": ("pyproj", "numpy"),
 }

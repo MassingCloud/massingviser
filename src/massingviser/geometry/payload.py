@@ -12,9 +12,9 @@ buffer is a `memcpy` into a vertex buffer in C++.
 
     offset  type        field
     0       char[4]     "MVMS"
-    4       uint32      version (1)
+    4       uint32      version (2; v1 is the same layout with no normals block)
     8       uint32      mesh_count
-    12      uint32      flags            bit 0 = normals present (always 0 in v1, see below)
+    12      uint32      flags            bit 0 = normals present
     16      uint32      vertex_count     total across every mesh in the chunk
     20      uint32      index_count      total
     24      uint32      lod              0 is the finest level
@@ -22,6 +22,7 @@ buffer is a `memcpy` into a vertex buffer in C++.
     32      directory   mesh_count x 4 x uint32:
                           vertex_offset, vertex_count, index_offset, index_count
             positions   float32[3] x vertex_count
+            normals     float32[3] x vertex_count   (only when flags & 1)
             indices     uint32     x index_count
 
 Everything after the header is tightly packed and 4-byte aligned by construction. **Indices are
@@ -29,10 +30,10 @@ local to their mesh**, so a consumer can slice one element out and upload it wit
 
 Three decisions worth stating:
 
-- **No normals in v1.** Flat shading is right for building geometry and smooth shading is right for
-  a scanned mesh, and the two need different vertex counts -- baking either choice into the wire
-  format decides shading for every consumer. Deriving them is O(n) in any engine. The flag bit
-  exists so v2 can add them without breaking the format.
+- **Normals are optional and crease-aware.** Flat shading is right for a wall and smooth shading is
+  right for a scan, so ``geometry.normals`` splits vertices only where the surface actually creases
+  and the buffer carries the result. A consumer that would rather derive its own asks for
+  ``shade=False`` and gets positions and indices alone.
 - **Chunked, not one buffer per model.** A chunk holds whole meshes up to a vertex budget, so
   editing one wall invalidates one chunk rather than the building. This mirrors what
   ``massingviser.vcs`` does with detached lists, and for the same reason.
@@ -52,13 +53,21 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .lod import decimate_to_budget
+from .normals import DEFAULT_CREASE_DEGREES, compute_shading
 
 MAGIC = b"MVMS"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+
+#: Versions this build can read. v1 had no normals block; v2 adds one behind ``FLAG_NORMALS``.
+#: Reading both costs one branch and means a payload written by an older build still loads.
+READABLE_VERSIONS = frozenset({1, 2})
+
+#: Header flag bit 0: a normals block sits between the positions and the indices.
+FLAG_NORMALS = 1
 
 #: What a ``PayloadRef`` declares its encoding to be. Versioned in the string so a consumer can
 #: refuse a buffer it does not understand instead of reading a header it will misinterpret.
-MESH_ENCODING = "massingviser-mesh/1"
+MESH_ENCODING = "massingviser-mesh/2"
 HEADER_SIZE = 32
 DIRECTORY_ENTRY_SIZE = 16
 
@@ -89,6 +98,9 @@ class MeshInput:
     global_id: str
     vertices: np.ndarray
     faces: np.ndarray
+    #: Per-vertex, same length as ``vertices``. Supplied by ``compute_shading`` rather than built
+    #: here, because getting them right needs the crease logic and a caller may already have them.
+    normals: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -162,8 +174,20 @@ def encode_mesh_batch(meshes: Sequence[MeshInput], *, lod: int = 0) -> EncodedPa
     if lod < 0:
         raise ValueError("LOD levels start at 0.")
 
+    # All or nothing per chunk. The flag is in the header, not the directory, so a chunk where some
+    # meshes carried normals and others did not could not describe itself.
+    shaded = [mesh.normals is not None for mesh in meshes]
+    if any(shaded) and not all(shaded):
+        missing = [mesh.global_id for mesh in meshes if mesh.normals is None]
+        raise ValueError(
+            "A chunk carries normals for every mesh or for none. Missing: "
+            f"{', '.join(missing[:5])}."
+        )
+    with_normals = bool(meshes) and all(shaded)
+
     entries: list[MeshEntry] = []
     position_blocks: list[np.ndarray] = []
+    normal_blocks: list[np.ndarray] = []
     index_blocks: list[np.ndarray] = []
     directory = bytearray()
     vertex_cursor = 0
@@ -173,6 +197,15 @@ def encode_mesh_batch(meshes: Sequence[MeshInput], *, lod: int = 0) -> EncodedPa
         vertex_array, face_array = _as_mesh(mesh.vertices, mesh.faces)
         vertex_count = len(vertex_array)
         index_count = face_array.size
+
+        if with_normals:
+            normal_array = np.asarray(mesh.normals, dtype=np.float64).reshape(-1, 3)
+            if len(normal_array) != vertex_count:
+                raise ValueError(
+                    f'Mesh "{mesh.global_id}" has {len(normal_array)} normals for '
+                    f"{vertex_count} vertices."
+                )
+            normal_blocks.append(normal_array.astype("<f4", copy=False).reshape(-1))
 
         if vertex_count and face_array.size:
             highest = int(face_array.max())
@@ -203,7 +236,7 @@ def encode_mesh_batch(meshes: Sequence[MeshInput], *, lod: int = 0) -> EncodedPa
         MAGIC,
         FORMAT_VERSION,
         len(meshes),
-        0,  # flags: no normals in v1
+        FLAG_NORMALS if with_normals else 0,
         vertex_cursor,
         index_cursor,
         lod,
@@ -211,7 +244,16 @@ def encode_mesh_batch(meshes: Sequence[MeshInput], *, lod: int = 0) -> EncodedPa
     )
     positions = np.concatenate(position_blocks) if position_blocks else np.empty(0, dtype="<f4")
     indices = np.concatenate(index_blocks) if index_blocks else np.empty(0, dtype="<u4")
-    data = b"".join((header, bytes(directory), positions.tobytes(), indices.tobytes()))
+    normals = np.concatenate(normal_blocks) if normal_blocks else np.empty(0, dtype="<f4")
+    data = b"".join(
+        (
+            header,
+            bytes(directory),
+            positions.tobytes(),
+            normals.tobytes(),
+            indices.tobytes(),
+        )
+    )
     return EncodedPayload(
         id=hashlib.sha256(data).hexdigest()[:ID_LENGTH],
         data=data,
@@ -224,6 +266,9 @@ def encode_mesh_batch(meshes: Sequence[MeshInput], *, lod: int = 0) -> EncodedPa
 class DecodedMesh:
     vertices: np.ndarray
     faces: np.ndarray
+    #: ``None`` when the payload carried no normals block -- a v1 buffer, or one written with
+    #: shading turned off.
+    normals: np.ndarray | None = None
 
 
 def decode_mesh_batch(data: bytes) -> tuple[DecodedMesh, ...]:
@@ -240,19 +285,29 @@ def decode_mesh_batch(data: bytes) -> tuple[DecodedMesh, ...]:
     )
     if magic != MAGIC:
         raise ValueError(f"Not a mesh payload (magic {magic!r}).")
-    if version != FORMAT_VERSION:
-        raise ValueError(f"Payload format v{version}; this build reads v{FORMAT_VERSION}.")
-    del flags, lod
+    if version not in READABLE_VERSIONS:
+        readable = ", ".join(f"v{v}" for v in sorted(READABLE_VERSIONS))
+        raise ValueError(f"Payload format v{version}; this build reads {readable}.")
+    del lod
 
+    has_normals = bool(flags & FLAG_NORMALS)
     directory_end = HEADER_SIZE + mesh_count * DIRECTORY_ENTRY_SIZE
     positions_end = directory_end + vertex_count * 3 * 4
-    expected = positions_end + index_count * 4
+    normals_end = positions_end + (vertex_count * 3 * 4 if has_normals else 0)
+    expected = normals_end + index_count * 4
     if len(data) != expected:
         raise ValueError(f"Payload declares {expected} bytes but carries {len(data)}.")
 
     positions = np.frombuffer(data, dtype="<f4", count=vertex_count * 3, offset=directory_end)
     positions = positions.reshape(-1, 3)
-    indices = np.frombuffer(data, dtype="<u4", count=index_count, offset=positions_end)
+    normals = (
+        np.frombuffer(data, dtype="<f4", count=vertex_count * 3, offset=positions_end).reshape(
+            -1, 3
+        )
+        if has_normals
+        else None
+    )
+    indices = np.frombuffer(data, dtype="<u4", count=index_count, offset=normals_end)
 
     meshes: list[DecodedMesh] = []
     for index in range(mesh_count):
@@ -264,6 +319,7 @@ def decode_mesh_batch(data: bytes) -> tuple[DecodedMesh, ...]:
             DecodedMesh(
                 vertices=positions[v_offset : v_offset + v_count],
                 faces=indices[i_offset : i_offset + i_count].reshape(-1, 3),
+                normals=(normals[v_offset : v_offset + v_count] if normals is not None else None),
             )
         )
     return tuple(meshes)
@@ -300,12 +356,19 @@ def _decimated(mesh: MeshInput, budget: int) -> MeshInput:
     return MeshInput(mesh.global_id, result.vertices, result.faces)
 
 
+def _shaded(mesh: MeshInput, crease_degrees: float) -> MeshInput:
+    shaded = compute_shading(mesh.vertices, mesh.faces, crease_degrees=crease_degrees)
+    return MeshInput(mesh.global_id, shaded.vertices, shaded.faces, shaded.normals)
+
+
 def build_geometry_payloads(
     meshes: Mapping[str, tuple[object, object]],
     *,
     lod_budgets: Sequence[int] = DEFAULT_LOD_BUDGETS,
     chunk_vertices: int = DEFAULT_CHUNK_VERTICES,
     min_reduction: float = MIN_LOD_REDUCTION,
+    shade: bool = True,
+    crease_degrees: float = DEFAULT_CREASE_DEGREES,
 ) -> GeometryPayloadSet:
     """Turn ``{global_id: (vertices, faces)}`` into content-addressed, chunked, LOD'd payloads.
 
@@ -315,6 +378,11 @@ def build_geometry_payloads(
     A level that does not cut at least ``min_reduction`` of the faces above it is dropped. Shipping
     a level that looks the same and costs a whole payload is a straight loss: the client pays the
     transfer and gets no fewer triangles for it.
+
+    Normals are computed **per level**, after decimation. Reusing level 0's normals lower down
+    would light a simplified surface as though it still had the detail it lost, which reads as
+    shading that slides over the geometry as the camera pulls back. Pass ``shade=False`` for
+    positions and indices only.
     """
     ordered = [
         MeshInput(global_id, *_as_mesh(vertices, faces))
@@ -337,6 +405,9 @@ def build_geometry_payloads(
             continue
         levels.append(decimated)
         previous_total = total
+
+    if shade:
+        levels = [[_shaded(mesh, crease_degrees) for mesh in level] for level in levels]
 
     for lod, level in enumerate(levels):
         for chunk in chunk_meshes(level, chunk_vertices=chunk_vertices):

@@ -25,7 +25,7 @@ from ...schema import (
     TaskModelLinkRecord,
 )
 
-ScheduleFormat = Literal["csv", "json"]
+ScheduleFormat = Literal["csv", "json", "xer", "mspdi"]
 
 
 @runtime_checkable

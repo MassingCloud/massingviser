@@ -38,11 +38,20 @@ def create_adapters_plugin() -> Any:
         ifc_adapter: Any = None
 
         if "ifc" in installed:
-            from ..plugins.interop import ImportAdapterToken
+            from ..plugins.interop import ExportAdapterToken, ImportAdapterToken
 
             ifc_module = load("ifc")
             ifc_adapter = ifc_module.IfcImportAdapter()
             context.capabilities.provide(ImportAdapterToken, ifc_adapter, version=PLUGIN_VERSION)
+
+            # Writing, from whatever currently answers "what elements are there, and what shape
+            # are they?" -- the massing bridge today, an imported model once one is loaded.
+            writer = load("ifc_write")
+            context.capabilities.provide(
+                ExportAdapterToken,
+                writer.IfcExportAdapter(lambda: _export_elements(context)),
+                version=PLUGIN_VERSION,
+            )
 
             def publish(payload: Any) -> None:
                 """Publish every parsed model to everything that consumes elements."""
@@ -146,6 +155,74 @@ class _IfcGeometrySource:
     def read(self, payload_id: str) -> bytes | None:
         found = self._set.by_id(payload_id)
         return found.data if found is not None else None
+
+
+def _export_elements(context: PluginContext) -> list[Any]:
+    """Collect what to write, from the same tokens everything else reads.
+
+    Geometry comes from the geometry payload source and semantics from the scene node source, which
+    is the same join the engine bridge makes -- so an IFC export and an engine package describe the
+    same building rather than two independently-assembled ones.
+    """
+    from ..plugins.engine import SceneNodeSourceToken
+    from . import load as _load
+
+    writer = _load("ifc_write")
+    meshes = _mesh_lookup(context)
+
+    elements: list[Any] = []
+    for provided in context.capabilities.get_all(SceneNodeSourceToken):
+        for node in provided.value.nodes():
+            vertices, faces = meshes.get(node.global_id, (None, None))
+            flat = {
+                f"{pset}.{key}": value
+                for pset, values in (node.property_sets or {}).items()
+                for key, value in (values or {}).items()
+                if value is not None
+            }
+            elements.append(
+                writer.ExportElement(
+                    global_id=node.global_id,
+                    name=node.global_id,
+                    ifc_class=node.ifc_class,
+                    level=node.level_global_id,
+                    building=node.parent_global_id,
+                    vertices=vertices,
+                    faces=faces,
+                    properties=flat,
+                )
+            )
+    return elements
+
+
+def _mesh_lookup(context: PluginContext) -> dict[str, Any]:
+    """Decode the geometry payloads back to triangles.
+
+    Round-tripping through the payload rather than keeping a second copy of every mesh: the payload
+    is already the canonical geometry, and reading it back is how we know the exported solid is the
+    one a client would have drawn.
+    """
+    from ..geometry import decode_mesh_batch
+    from ..plugins.engine import GeometryPayloadSourceToken
+
+    lookup: dict[str, Any] = {}
+    for provided in context.capabilities.get_all(GeometryPayloadSourceToken):
+        source = provided.value
+        decoded: dict[str, Any] = {}
+        for global_id, ladder in source.geometry().items():
+            if global_id in lookup or not ladder:
+                continue
+            finest = ladder[0]
+            if finest.payload_id not in decoded:
+                data = source.read(finest.payload_id)
+                if data is None:
+                    continue
+                decoded[finest.payload_id] = decode_mesh_batch(data)
+            batch = decoded[finest.payload_id]
+            if finest.geometry_index < len(batch):
+                mesh = batch[finest.geometry_index]
+                lookup[global_id] = (mesh.vertices, mesh.faces)
+    return lookup
 
 
 def _publish_model(context: PluginContext, ifc_module: Any, model: Any, model_id: str) -> None:

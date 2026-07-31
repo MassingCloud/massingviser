@@ -34,6 +34,7 @@ from massingviser.plugins.planning import (
     parse_timestamp,
     planning_plugin,
 )
+from massingviser.plugins.planning.formats import parse_xer
 from massingviser.plugins.procurement import (
     BoqLineSourceToken,
     FieldStatusToken,
@@ -643,3 +644,159 @@ async def test_earned_value_needs_an_award_to_earn_against(harness):
     await packages.update(package.id, {"elements": (ElementRef("m1", "E1"),)})
     result = await harness.capability(InstallProgressToken).earned_value(package.id, "2026-06-01")
     assert not result.ok and "no rate to earn against" in result.error.message
+
+
+# ---------------------------------------------------------------------------------------------
+# Vendor programme formats
+#
+# The two formats a real deployment actually receives. Each test names a way a naive reader gets
+# the programme subtly wrong -- wrong identity, wrong relationship, wrong units, a phantom task --
+# because every one of those produces dates that look plausible and are not.
+# ---------------------------------------------------------------------------------------------
+
+XER = "ERMHDR\t19.12\t2026-01-01\n" + "\n".join(
+    [
+        "%T\tPROJWBS",
+        "%F\twbs_id\twbs_short_name",
+        "%R\t100\tSUB",
+        "%T\tTASK",
+        "%F\ttask_id\twbs_id\ttask_code\ttask_name\ttarget_start_date\ttarget_end_date"
+        "\tphys_complete_pct\tdriving_path_flag",
+        "%R\t1\t100\tA1000\tPiling\t2026-01-05 08:00\t2026-02-04 17:00\t100\tY",
+        "%R\t2\t100\tA1010\tSubstructure\t2026-02-05 08:00\t2026-04-06 17:00\t50\tY",
+        "%R\t3\t100\tA1020\tFrame\t2026-04-07 08:00\t2026-07-07 17:00\t0\tN",
+        "%T\tTASKPRED",
+        "%F\ttask_id\tpred_task_id\tpred_type\tlag_hr_cnt",
+        "%R\t2\t1\tPR_FS\t0",
+        "%R\t3\t2\tPR_SS\t16",
+        "%E",
+    ]
+)
+
+MSPDI = """<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+ <Tasks>
+  <Task><UID>0</UID><Name>Whole project</Name><Start>2026-01-05T08:00:00</Start>
+    <Finish>2026-12-01T17:00:00</Finish><OutlineLevel>0</OutlineLevel></Task>
+  <Task><UID>1</UID><Name>Enabling</Name><WBS>1</WBS><OutlineLevel>1</OutlineLevel>
+    <Start>2026-01-05T08:00:00</Start><Finish>2026-02-04T17:00:00</Finish><Critical>1</Critical></Task>
+  <Task><UID>2</UID><Name>Demolition</Name><WBS>1.1</WBS><OutlineLevel>2</OutlineLevel>
+    <Start>2026-01-05T08:00:00</Start><Finish>2026-01-20T17:00:00</Finish>
+    <PercentComplete>100</PercentComplete>
+    <PredecessorLink><PredecessorUID>1</PredecessorUID><Type>3</Type><LinkLag>0</LinkLag></PredecessorLink></Task>
+  <Task><UID>3</UID><Name>Superstructure</Name><WBS>2</WBS><OutlineLevel>1</OutlineLevel>
+    <Start>2026-02-05T08:00:00</Start><Finish>2026-06-30T17:00:00</Finish>
+    <PredecessorLink><PredecessorUID>1</PredecessorUID><Type>1</Type><LinkLag>0</LinkLag></PredecessorLink></Task>
+ </Tasks>
+</Project>"""
+
+
+async def _imported(harness, payload, format):
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    result = await schedule.import_schedule(payload, format)
+    assert result.ok, getattr(result, "error", None)
+    return schedule, result.value
+
+
+async def test_both_vendor_formats_are_offered(harness):
+    await harness.load(planning_plugin)
+    assert set(harness.capability(ScheduleImportToken).supported_formats()) == {
+        "csv",
+        "json",
+        "xer",
+        "mspdi",
+    }
+
+
+async def test_xer_identity_is_the_activity_code_not_the_internal_id(harness):
+    """A scheduler types A1000 into a report; P6's `task_id` is a database key nobody sees."""
+    schedule, _ = await _imported(harness, XER, "xer")
+    assert [task.id for task in schedule.tasks()] == ["A1000", "A1010", "A1020"]
+
+
+async def test_xer_reads_dates_progress_and_criticality(harness):
+    schedule, _ = await _imported(harness, XER, "xer")
+    piling = next(task for task in schedule.tasks() if task.id == "A1000")
+    assert piling.planned_start.startswith("2026-01-05")
+    assert piling.planned_finish.startswith("2026-02-04")
+    assert piling.percent_complete == 1.0  # P6 stores 0-100, the platform stores 0..1
+    assert piling.critical is True
+    assert piling.wbs_code == "SUB"
+
+
+async def test_xer_relationships_keep_their_type_and_convert_lag_to_days(harness):
+    """`PR_SS` is not `FS`, and 16 hours is two days -- both are silent corruptions if wrong."""
+    schedule, _ = await _imported(harness, XER, "xer")
+    links = {(d.predecessor_id, d.successor_id): d for d in schedule.dependencies()}
+    assert links[("A1000", "A1010")].type == "FS"
+    assert links[("A1010", "A1020")].type == "SS"
+    assert links[("A1010", "A1020")].lag == pytest.approx(2.0)
+
+
+async def test_a_task_can_have_several_predecessors(harness):
+    """The CSV reader's single column cannot express this; a real programme is full of it."""
+    schedule, _ = await _imported(harness, MSPDI, "mspdi")
+    assert len(schedule.dependencies()) == 2
+    assert {d.successor_id for d in schedule.dependencies()} == {"1.1", "2"}
+
+
+async def test_mspdi_skips_the_project_summary_row(harness):
+    """UID 0 spans the whole programme; importing it adds a task nothing builds."""
+    schedule, _ = await _imported(harness, MSPDI, "mspdi")
+    assert "0" not in {task.id for task in schedule.tasks()}
+    assert len(schedule.tasks()) == 3
+
+
+async def test_mspdi_derives_parents_from_the_outline_level(harness):
+    """MSPDI expresses hierarchy by position and depth, never by pointing at a parent."""
+    schedule, _ = await _imported(harness, MSPDI, "mspdi")
+    parents = {task.id: task.parent_id for task in schedule.tasks()}
+    assert parents == {"1": None, "1.1": "1", "2": None}
+
+
+async def test_mspdi_link_types_use_microsofts_numbering(harness):
+    """0=FF, 1=FS, 2=SF, 3=SS. Alphabetical order silently reverses half a programme."""
+    schedule, _ = await _imported(harness, MSPDI, "mspdi")
+    links = {(d.predecessor_id, d.successor_id): d.type for d in schedule.dependencies()}
+    assert links[("1", "1.1")] == "SS"  # Type 3
+    assert links[("1", "2")] == "FS"  # Type 1
+
+
+async def test_a_programme_that_is_not_the_format_it_claims_is_named(harness):
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    result = await schedule.import_schedule("id,name\n1,x\n", "xer")
+    assert not result.ok and "does not look like a P6 export" in result.error.message
+
+
+async def test_a_doctype_in_a_programme_is_refused(harness):
+    """Same rule the ICDD reader applies: a DOCTYPE is the entry point for entity expansion."""
+    await harness.load(planning_plugin)
+    hostile = '<!DOCTYPE x [<!ENTITY a "b">]><Project><Tasks/></Project>'
+    result = await harness.capability(ScheduleImportToken).import_schedule(hostile, "mspdi")
+    assert not result.ok and "DOCTYPE" in result.error.message
+
+
+async def test_malformed_xml_is_reported_not_raised(harness):
+    await harness.load(planning_plugin)
+    result = await harness.capability(ScheduleImportToken).import_schedule("<Project", "mspdi")
+    assert not result.ok and "well-formed" in result.error.message
+
+
+def test_a_windows_encoded_export_still_reads():
+    """XER out of P6 is routinely cp1252, and an en-dash in a task name must not fail an import."""
+    payload = XER.replace("Piling", "Piling – phase 1").encode("cp1252")
+    rows = parse_xer(payload)
+    assert rows[0]["name"] == "Piling – phase 1"
+
+
+def test_a_short_xer_row_is_padded_not_dropped():
+    """P6 omits trailing empty fields, and dropping those rows loses real tasks."""
+    truncated = XER.replace(
+        "%R\t3\t100\tA1020\tFrame\t2026-04-07 08:00\t2026-07-07 17:00\t0\tN",
+        "%R\t3\t100\tA1020\tFrame\t2026-04-07 08:00\t2026-07-07 17:00",
+    )
+    rows = parse_xer(truncated)
+    assert len(rows) == 3
+    assert rows[2]["critical"] is False

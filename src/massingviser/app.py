@@ -15,6 +15,7 @@ change by a line.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from typing import Any
 
 from .geometry import (
@@ -64,7 +65,11 @@ from .plugins.massing import (
     massing_plugin,
     to_xy,
 )
-from .plugins.planning import ElementFilterSourceToken, planning_plugin
+from .plugins.planning import (
+    ElementFilterSourceToken,
+    ScheduleImportToken,
+    planning_plugin,
+)
 from .plugins.procurement import BoqLineSourceToken, PackageBoqLine, procurement_plugin
 from .plugins.shell import shell_plugin
 from .plugins.twin import twin_plugin
@@ -203,6 +208,111 @@ class _NominalScheduleBasis:
                 weight=weight,
             )
             for index, weight in enumerate(self.WEIGHTS)
+        )
+
+
+def _parse_date(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def _period_start(moment: datetime, unit: str) -> datetime:
+    if unit == "week":
+        return (moment - timedelta(days=moment.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    if unit == "quarter":
+        return datetime(moment.year, 3 * ((moment.month - 1) // 3) + 1, 1)
+    return datetime(moment.year, moment.month, 1)
+
+
+def _next_period(start: datetime, unit: str) -> datetime:
+    if unit == "week":
+        return start + timedelta(days=7)
+    months = 3 if unit == "quarter" else 1
+    month = start.month - 1 + months
+    return datetime(start.year + month // 12, month % 12 + 1, 1)
+
+
+class _PlannedScheduleBasis:
+    """The cashflow curve, derived from the programme that was actually imported.
+
+    Weighted by **duration overlap**: each task spreads its work evenly across the days it spans,
+    and every period collects the share that lands inside it. That is the standard way to get an
+    S-curve out of a programme without pretending to resource loading the schedule does not carry.
+    A milestone contributes nothing, because a zero-day task consumes no work -- counting it would
+    put a spike of cost on a date where nothing is built.
+
+    Falls back to the nominal curve while there is no programme, rather than reporting no periods
+    at all. An estimate with no cashflow is less useful than one with a clearly labelled placeholder
+    -- and `basis` says which of the two you are looking at.
+    """
+
+    __slots__ = ("_kernel", "_nominal")
+
+    def __init__(self, kernel: Kernel[Any]) -> None:
+        self._kernel = kernel
+        self._nominal = _NominalScheduleBasis()
+
+    def _tasks(self) -> Sequence[Any]:
+        schedule = self._kernel.capabilities.get(ScheduleImportToken)
+        return schedule.tasks() if schedule is not None else ()
+
+    def basis(self) -> str:
+        """Which curve the last call would return. Surfaced so a report can say so."""
+        return "programme" if self._spans() else "nominal"
+
+    def _spans(self) -> list[tuple[datetime, datetime]]:
+        tasks = self._tasks()
+        # A summary task spans its children and represents none of its own work. Counting both puts
+        # the roll-up's duration on top of the detail underneath it, which loads the front of the
+        # curve with cost that nothing builds. Only leaves carry work.
+        parents = {task.parent_id for task in tasks if task.parent_id}
+
+        spans = []
+        for task in tasks:
+            if task.id in parents:
+                continue
+            start = _parse_date(task.planned_start)
+            finish = _parse_date(task.planned_finish)
+            if start is None or finish is None or finish <= start:
+                continue
+            spans.append((start, finish))
+        return spans
+
+    def periods(self, unit: str = "month") -> Sequence[SchedulePeriod]:
+        spans = self._spans()
+        if not spans:
+            return self._nominal.periods(unit)
+
+        horizon = max(finish for _, finish in spans)
+        cursor = _period_start(min(start for start, _ in spans), unit)
+        buckets: list[tuple[datetime, datetime, float]] = []
+        while cursor < horizon:
+            end = _next_period(cursor, unit)
+            share = 0.0
+            for start, finish in spans:
+                overlap = (min(finish, end) - max(start, cursor)).total_seconds()
+                if overlap > 0:
+                    # Share of *this task's* duration, so a six-month task and a one-week task
+                    # each contribute one unit of work in total rather than in proportion to how
+                    # long they run. Length is when the work happens, not how much there is.
+                    share += overlap / (finish - start).total_seconds()
+            buckets.append((cursor, end, share))
+            cursor = end
+
+        total = sum(share for _, _, share in buckets)
+        if total <= 0:  # every task was a milestone
+            return self._nominal.periods(unit)
+        return tuple(
+            SchedulePeriod(
+                start=start.date().isoformat(),
+                end=end.date().isoformat(),
+                weight=share / total,
+            )
+            for start, end, share in buckets
         )
 
 
@@ -624,7 +734,7 @@ def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
             ElementResolverToken, _MassingElementResolver(kernel), version="0.1.0"
         )
         context.capabilities.provide(
-            ScheduleBasisToken, _NominalScheduleBasis(), version="0.1.0", priority=-10
+            ScheduleBasisToken, _PlannedScheduleBasis(kernel), version="0.1.0"
         )
         context.capabilities.provide(
             ElementFilterSourceToken, _MassingElementFilter(source), version="0.1.0"

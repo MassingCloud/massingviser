@@ -11,6 +11,12 @@ SDK and plugins is what keeps those runnable anywhere.
 
 from .bvh import LEAF_SIZE, Aabb, Bvh
 from .lod import DecimatedMesh, cluster_decimate, decimate_to_budget, lod_chain
+from .normals import (
+    DEFAULT_CREASE_DEGREES,
+    ShadedMesh,
+    compute_shading,
+    face_normals,
+)
 from .payload import (
     DEFAULT_CHUNK_VERTICES,
     DEFAULT_LOD_BUDGETS,
@@ -40,7 +46,11 @@ __all__ = [
     "Bvh",
     "DEFAULT_CHUNK_VERTICES",
     "DEFAULT_LOD_BUDGETS",
+    "DEFAULT_CREASE_DEGREES",
     "MESH_ENCODING",
+    "ShadedMesh",
+    "compute_shading",
+    "face_normals",
     "DecimatedMesh",
     "DecodedMesh",
     "EncodedPayload",
