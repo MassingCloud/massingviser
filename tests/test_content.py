@@ -726,3 +726,182 @@ async def test_publishing_a_session_that_changed_nothing_is_refused(harness):
     session = (await sessions.open("m1")).value
     result = await harness.capability(PublishToken).publish(session.id, version="C03")
     assert not result.ok and "changed nothing" in result.error.message
+
+
+# ---------------------------------------------------------------------------------------------
+# The authoring geometry backend
+#
+# Authoring owns sessions, history and the publish gate but no modeller, and until this existed
+# nothing supplied one -- so every authoring service in a real deployment returned
+# CAPABILITY_NOT_FOUND and the family was contracts and tests and nothing else.
+# ---------------------------------------------------------------------------------------------
+
+
+def _block(name, y, storeys=3):
+    from massingviser.plugins.authoring import EditOperation
+
+    return EditOperation(
+        kind="create",
+        properties={
+            "points": [(0, y, 0), (20, y, 0), (20, y + 10, 0), (0, y + 10, 0)],
+            "name": name,
+            "story_count": storeys,
+            "story_height": 3.5,
+        },
+    )
+
+
+async def _authored(harness=None):
+    """A live kernel with a session open and two blocks 30 m apart."""
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import AuthoringSessionToken, EditCommandToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await kernel.capabilities.get(AuthoringSessionToken).open("massing")
+    edits = kernel.capabilities.get(EditCommandToken)
+    first = (await edits.apply([_block("A", 0)])).value[0].global_id
+    second = (await edits.apply([_block("B", 30)])).value[0].global_id
+    return kernel, edits, first, second
+
+
+async def test_the_backend_is_installed_by_default():
+    """Without this the whole authoring family is inert in a real deployment."""
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import GeometryBackendToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    assert kernel.capabilities.get(GeometryBackendToken) is not None
+    await kernel.stop()
+
+
+async def test_an_edit_creates_a_real_mass_and_returns_its_id():
+    """Not a repr of the record: an id the spatial index and every other family can resolve."""
+    from massingviser.plugins.massing import MassingToken
+
+    kernel, _, first, second = await _authored()
+    # Structural, not literal: ids come from a factory whose counter carries across a session, so
+    # asserting "mass-1" only passes when this test runs first.
+    assert first != second
+    assert not first.startswith("MassingObjectRecord")  # a repr, which is what the bug produced
+    assert {mass.id for mass in kernel.capabilities.get(MassingToken).list()} == {first, second}
+    await kernel.stop()
+
+
+async def test_an_operation_the_backend_cannot_perform_is_refused_by_name():
+    """Massing cannot move a mass. Reporting success for an edit that did nothing is worse."""
+    from massingviser.plugins.authoring import EditOperation
+    from massingviser.schema import ElementRef
+
+    kernel, edits, first, _ = await _authored()
+    result = await edits.apply(
+        [
+            EditOperation(
+                kind="modify",
+                element=ElementRef("massing", first),
+                transform=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1),
+            )
+        ]
+    )
+    assert not result.ok
+    assert "cannot" in result.error.message and "modify" in result.error.message
+    await kernel.stop()
+
+
+async def test_the_version_is_derived_from_the_geometry():
+    """A counter would make two sessions that did the same thing disagree."""
+    from massingviser.plugins.authoring import GeometryBackendToken
+
+    kernel, edits, _, _ = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    before = backend.current_version("massing")
+    assert before == backend.current_version("massing")  # stable when nothing changed
+
+    await edits.apply([_block("C", 60)])
+    assert backend.current_version("massing") != before
+    await kernel.stop()
+
+
+async def test_a_constraint_is_measured_against_real_coordinates():
+    from massingviser.plugins.authoring import ConstraintRecord, GeometryBackendToken
+    from massingviser.schema import ElementRef
+
+    kernel, _, first, second = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    pair = (ElementRef("massing", first), ElementRef("massing", second))
+
+    # Same storey heights, so the same Z centre.
+    assert backend.evaluate_constraint(ConstraintRecord(id="1", kind="level", elements=pair))
+    # Same X extent, offset only in Y.
+    assert backend.evaluate_constraint(
+        ConstraintRecord(id="2", kind="alignment", elements=pair, tolerance=0.01)
+    )
+    # 30 m apart in Y, and measured rather than asserted.
+    assert backend.evaluate_constraint(
+        ConstraintRecord(id="3", kind="distance", value=30.0, elements=pair, tolerance=0.01)
+    )
+    assert not backend.evaluate_constraint(
+        ConstraintRecord(id="4", kind="distance", value=99.0, elements=pair, tolerance=0.01)
+    )
+    await kernel.stop()
+
+
+async def test_a_constraint_on_an_element_that_cannot_be_found_fails_closed():
+    """An unmeasurable constraint is not a satisfied one, or a publish gate lets anything through."""
+    from massingviser.plugins.authoring import ConstraintRecord, GeometryBackendToken
+    from massingviser.schema import ElementRef
+
+    kernel, _, _, second = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    assert not backend.evaluate_constraint(
+        ConstraintRecord(
+            id="1",
+            kind="level",
+            elements=(ElementRef("massing", "nope"), ElementRef("massing", second)),
+        )
+    )
+    # And a `custom` constraint, which has no defined semantics here.
+    assert not backend.evaluate_constraint(
+        ConstraintRecord(
+            id="2",
+            kind="custom",
+            elements=(ElementRef("massing", second), ElementRef("massing", second)),
+        )
+    )
+    await kernel.stop()
+
+
+async def test_a_mass_resolves_to_the_union_of_its_storeys():
+    """The index is keyed per storey; a constraint is written against the mass."""
+    from massingviser.plugins.authoring import GeometryBackendToken
+
+    kernel, _, first, _ = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    centre = backend._centroid(type("E", (), {"global_id": first})())
+    assert centre is not None
+    # Footprint 20 x 10 at the origin, three storeys of 3.5.
+    assert centre[0] == pytest.approx(10.0)
+    assert centre[1] == pytest.approx(5.0)
+    assert centre[2] == pytest.approx(5.25)
+    await kernel.stop()
+
+
+async def test_reverting_a_create_removes_the_mass_it_made():
+    from massingviser.plugins.authoring import EditOperation, GeometryBackendToken
+    from massingviser.plugins.massing import MassingToken
+    from massingviser.schema import ElementRef
+
+    kernel, _, first, _ = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    await backend.revert([EditOperation(kind="create", element=ElementRef("massing", first))])
+    assert first not in {mass.id for mass in kernel.capabilities.get(MassingToken).list()}
+    await kernel.stop()
+
+
+def test_the_spatial_index_can_say_what_it_holds():
+    """Callers legitimately need to ask; the alternative is each keeping its own drifting copy."""
+    from massingviser.geometry import Aabb, SceneIndex
+
+    index = SceneIndex({"b": Aabb((0, 0, 0), (1, 1, 1)), "a": Aabb((2, 2, 2), (3, 3, 3))})
+    assert index.labels() == ("a", "b")

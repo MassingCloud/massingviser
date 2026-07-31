@@ -1,0 +1,95 @@
+name: Release
+
+# Tag-driven. Pushing `v0.2.0` builds, checks, and publishes that version -- and nothing else can
+# trigger a publish, so a release is always a deliberate act with a commit behind it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  # Trusted publishing to PyPI. No long-lived token lives in this repository: PyPI verifies the
+  # workflow's identity directly, so there is no secret to leak or rotate.
+  id-token: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[all,dev]"
+      - name: The tag matches the version being released
+        # A tag that disagrees with pyproject publishes a version nobody can reproduce from this
+        # commit. Cheap to check, and impossible to spot afterwards.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os, tomllib, sys
+          tag = os.environ["GITHUB_REF"].removeprefix("refs/tags/v")
+          with open("pyproject.toml", "rb") as handle:
+              version = tomllib.load(handle)["project"]["version"]
+          if tag != version:
+              sys.exit(f"tag v{tag} does not match pyproject version {version}")
+          print(f"tag and pyproject agree on {version}")
+          PY
+      - run: ruff check . && ruff format --check .
+      - run: pytest
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: The browser client is inside the wheel
+        # It has been missing before. `--web` then serves the API happily and 404s the page.
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          required = [
+              "massingviser/web/client/index.html",
+              "massingviser/web/client/src/mvmesh.js",
+              "massingviser/web/client/src/viewer.js",
+              "massingviser/web/client/vendor/three.module.min.js",
+          ]
+          missing = [name for name in required if name not in names]
+          if missing:
+              sys.exit(f"wheel is missing the client: {missing}")
+          print(f"client present, {len(names)} files in the wheel")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a real tag publishes. A manual run defaults to a dry run and stops here.
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

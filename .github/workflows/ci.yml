@@ -93,10 +93,21 @@ jobs:
         with:
           node-version: "22"
       - run: pip install -e "."
+      - name: The vendored client matches its recorded digests
+        run: python web/vendor/fetch_vendor.py
       - run: python web/test/generate_fixtures.py
       - name: Fixtures are current
         run: git diff --exit-code -- web/test/fixtures
-      - run: node --test test/*.test.mjs
+      - run: npm ci
+        working-directory: web
+      - name: Reader tests
+        run: npm test
+        working-directory: web
+      # The pixel test: a real server, the real page, headless Chrome, and the framebuffer read
+      # back. Everything else checks one half -- what the server sends, or that the reader agrees
+      # with the encoder -- and neither notices if the two combine into a black screen.
+      - name: Render test
+        run: npm run test:render
         working-directory: web
 
   build:

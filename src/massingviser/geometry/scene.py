@@ -103,6 +103,15 @@ class SceneIndex:
     def box_of(self, global_id: str) -> Aabb | None:
         return self._boxes.get(global_id)
 
+    def labels(self) -> tuple[str, ...]:
+        """Everything the index holds, in a stable order.
+
+        Exposed because callers legitimately need to ask *what is in here* -- an id keyed at a
+        different granularity than the caller has, for instance -- and the alternative is each of
+        them keeping a second copy of the same list and letting it drift.
+        """
+        return tuple(sorted(self._boxes))
+
     def pick(
         self,
         origin: Sequence[float],

@@ -1,0 +1,41 @@
+name: Bug
+description: Something behaves differently from what it says it does.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most useful bug report names the *claim* that turned out to be false — a docstring, a
+        README line, a test name. This codebase states its behaviour in prose next to the code, so
+        "the comment says X and it does Y" is enough to act on.
+  - type: textarea
+    id: expected
+    attributes:
+      label: What was supposed to happen
+      description: Quote the docstring, README section or test that says so, if you can find one.
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Paste the output. A traceback is better than a description of a traceback.
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: A snippet that runs against a fresh `build_kernel()` is ideal.
+      render: python
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`pip show massingviser`, or the commit."
+    validations: { required: true }
+  - type: dropdown
+    id: extras
+    attributes:
+      label: Which extras are installed
+      description: Several behaviours differ by design when an adapter is absent.
+      multiple: true
+      options: [none, ifc, ifc_write, solids, crs, "all"]

@@ -14,6 +14,8 @@ change by a line.
 
 from __future__ import annotations
 
+import hashlib
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -24,9 +26,9 @@ from .geometry import (
     SpatialIndexToken,
     build_geometry_payloads,
 )
-from .kernel import Kernel, create_kernel
+from .kernel import Kernel, KernelError, create_kernel, err, ok
 from .plugins.analytics import MetricProviderToken, MetricValue, analytics_plugin
-from .plugins.authoring import authoring_plugin
+from .plugins.authoring import GeometryBackendToken, authoring_plugin
 from .plugins.coordination import (
     ClashEngineToken,
     ModelSnapshotToken,
@@ -57,6 +59,7 @@ from .plugins.icdd import icdd_plugin
 from .plugins.interop import interop_plugin
 from .plugins.markup import ElementResolverToken, markup_plugin
 from .plugins.massing import (
+    MASSING_COMMANDS,
     MassingToken,
     MetricsToken,
     ProfileToken,
@@ -73,7 +76,7 @@ from .plugins.planning import (
 from .plugins.procurement import BoqLineSourceToken, PackageBoqLine, procurement_plugin
 from .plugins.shell import shell_plugin
 from .plugins.twin import twin_plugin
-from .schema import create_default_migration_registry
+from .schema import ElementRef, create_default_migration_registry
 from .sdk import define_plugin
 
 
@@ -329,8 +332,6 @@ class _MassingElementFilter:
         self._source = source
 
     def match(self, model_id: str, filter: Any) -> Sequence[Any]:
-        from .schema import ElementRef
-
         wanted_class = (filter or {}).get("ifc_class")
         level = (filter or {}).get("level_global_id")
         return tuple(
@@ -448,8 +449,6 @@ class _BvhClashEngine:
     def intersect(
         self, a: Sequence[Any], b: Sequence[Any], kind: str, tolerance: float
     ) -> Sequence[RawClash]:
-        from .schema import ElementRef
-
         scene = self._index.build()
         groups = self._index.groups()
         if len(groups) < 2:
@@ -718,6 +717,219 @@ class _MassingSceneSource:
         return None
 
 
+def _id_of(value: Any) -> str:
+    """A record or an id, reduced to an id."""
+    return str(getattr(value, "id", value))
+
+
+class _MassingGeometryBackend:
+    """Authoring's geometry port, backed by the massing model.
+
+    Authoring owns sessions, history, constraints and the publish gate; it deliberately owns no
+    modeller. Until now nothing supplied one, so every authoring service in a real deployment
+    returned CAPABILITY_NOT_FOUND -- the family was contracts and tests and nothing else.
+
+    This is a real backend, not a stand-in: it creates, deletes and restores actual massing records
+    through the command bus, so an authoring edit is undoable by the same mechanism as any other
+    edit, and it evaluates constraints against real coordinates.
+
+    What it is **not** is a solid modeller. Massing has no operation that moves or rotates a mass,
+    so an edit carrying a transform is refused by name rather than accepted and dropped -- an
+    authoring session that reports success for an edit that did nothing is worse than one that
+    refuses it.
+    """
+
+    __slots__ = ("_kernel", "_published")
+
+    #: Operations massing can actually carry out.
+    SUPPORTED = frozenset({"create", "delete", "restore"})
+
+    def __init__(self, kernel: Kernel[Any]) -> None:
+        self._kernel = kernel
+        self._published: dict[str, str] = {}
+
+    # -- geometry state ------------------------------------------------------------------------
+
+    def _signature(self, mass_id: str | None = None) -> str:
+        """A content hash of the geometry, used as the version.
+
+        Derived from the geometry itself rather than from a counter, so two sessions that made the
+        same edit agree, and a session that changed nothing does not look like it did. The same
+        convention ``massingviser.vcs`` uses, for the same reason.
+        """
+        masses = self._kernel.capabilities.get(MassingToken)
+        stories = self._kernel.capabilities.get(StoryToken)
+        profiles = self._kernel.capabilities.get(ProfileToken)
+        if masses is None or stories is None or profiles is None:
+            return ""
+
+        parts: list[str] = []
+        for mass in masses.list():
+            if mass_id is not None and mass.id != mass_id:
+                continue
+            profile = profiles.get(mass.profile_id)
+            parts.append(
+                repr(
+                    (
+                        mass.id,
+                        tuple(to_xy(profile.points)) if profile else (),
+                        tuple((s.index, s.height, s.elevation) for s in stories.stories(mass.id)),
+                    )
+                )
+            )
+        return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:32]
+
+    def current_version(self, model_id: Any) -> str | None:
+        return self._published.get(str(model_id)) or self._signature() or None
+
+    def changed_since(self, element: Any, since_version: str) -> bool:
+        """Whether this element moved since that version -- the other half of a conflict check."""
+        return self._signature(getattr(element, "global_id", None)) != since_version
+
+    async def publish(self, model_id: Any, version: str) -> Any:
+        self._published[str(model_id)] = version
+        return ok(None)
+
+    # -- edits ---------------------------------------------------------------------------------
+
+    async def apply(self, operations: Sequence[Any]) -> Any:
+        touched: list[ElementRef] = []
+        for operation in operations:
+            if operation.kind not in self.SUPPORTED:
+                return err(
+                    KernelError(
+                        "COMMAND_FAILED",
+                        f'This backend is massing-backed and cannot "{operation.kind}". '
+                        f"It can {', '.join(sorted(self.SUPPORTED))}.",
+                        {"kind": operation.kind},
+                    )
+                )
+            result = await self._one(operation)
+            if not result.ok:
+                return err(result.error)
+            touched.append(result.value)
+        return ok(tuple(touched))
+
+    async def _one(self, operation: Any) -> Any:
+        commands = self._kernel.commands
+        if operation.kind == "create":
+            points = operation.properties.get("points")
+            if not points:
+                return err(KernelError("COMMAND_FAILED", "A create needs a profile outline.", {}))
+            sketched = await commands.execute(
+                MASSING_COMMANDS.sketch_profile,
+                {"points": points, "name": operation.properties.get("name", "Mass")},
+            )
+            if not sketched.ok:
+                return err(sketched.error)
+            created = await commands.execute(
+                MASSING_COMMANDS.create_mass,
+                {
+                    "name": operation.properties.get("name", "Mass"),
+                    "profile_id": sketched.value,
+                    "story_count": int(operation.properties.get("story_count", 1)),
+                    "story_height": float(operation.properties.get("story_height", 3.5)),
+                },
+            )
+            if not created.ok:
+                return err(created.error)
+            # `create_mass` returns the record, not its id. Stringifying the whole dataclass into
+            # an ElementRef produces an id that matches nothing in the spatial index, so every
+            # constraint measured against it silently reads False.
+            return ok(ElementRef(MASSING_MODEL_ID, _id_of(created.value)))
+
+        target = getattr(operation.element, "global_id", None)
+        if not target:
+            return err(KernelError("COMMAND_FAILED", f"A {operation.kind} needs an element.", {}))
+        command = (
+            MASSING_COMMANDS.remove_mass
+            if operation.kind == "delete"
+            else MASSING_COMMANDS.restore_mass
+        )
+        result = await commands.execute(command, {"id": target})
+        if not result.ok:
+            return err(result.error)
+        return ok(ElementRef(MASSING_MODEL_ID, target))
+
+    async def revert(self, operations: Sequence[Any]) -> Any:
+        """Undo, in reverse order.
+
+        Reverse order matters: operations applied forwards may depend on each other, and undoing
+        them in the order they ran re-runs those dependencies backwards.
+        """
+        for operation in reversed(list(operations)):
+            if operation.element is None:
+                continue
+            if operation.kind == "create":
+                await self._kernel.commands.execute(
+                    MASSING_COMMANDS.remove_mass, {"id": operation.element.global_id}
+                )
+            elif operation.kind == "delete":
+                await self._kernel.commands.execute(
+                    MASSING_COMMANDS.restore_mass, {"id": operation.element.global_id}
+                )
+        return ok(None)
+
+    # -- constraints ---------------------------------------------------------------------------
+
+    def _centroid(self, element: Any) -> tuple[float, float, float] | None:
+        """Where an element is, from the spatial index rather than from a stored field.
+
+        The index is keyed per **storey** (``mass-1:003``), because that is the granularity
+        everything else measures at. A constraint is usually written against the mass, so an id the
+        index does not hold directly is resolved to the union of its storeys -- looking it up
+        literally and giving up returns None, and an unmeasurable constraint fails closed, so the
+        whole constraint system would quietly never hold.
+        """
+        index = self._kernel.capabilities.get(SpatialIndexToken)
+        if index is None:
+            return None
+        global_id = getattr(element, "global_id", "")
+        built = index.build()
+
+        box = built.box_of(global_id)
+        if box is not None:
+            return tuple((low + high) / 2.0 for low, high in zip(box.min, box.max, strict=True))
+
+        parts = [
+            built.box_of(label) for label in built.labels() if label.startswith(f"{global_id}:")
+        ]
+        parts = [part for part in parts if part is not None]
+        if not parts:
+            return None
+        lows = [min(part.min[axis] for part in parts) for axis in range(3)]
+        highs = [max(part.max[axis] for part in parts) for axis in range(3)]
+        return tuple((low + high) / 2.0 for low, high in zip(lows, highs, strict=True))
+
+    def evaluate_constraint(self, constraint: Any) -> bool:
+        """Whether a constraint holds, measured against real coordinates.
+
+        Each kind is a distance test on a different projection, which is what makes them all
+        answerable from bounds alone: ``distance`` in 3D, ``alignment`` in plan, ``level`` in Z.
+        """
+        points = [self._centroid(element) for element in constraint.elements]
+        if len(points) < 2 or any(point is None for point in points):
+            # An unmeasurable constraint is not a satisfied one. Returning True would let a publish
+            # through on a constraint nobody could check.
+            return False
+
+        first, second = points[0], points[1]
+        tolerance = max(constraint.tolerance, 0.0)
+
+        if constraint.kind == "level":
+            return abs(first[2] - second[2]) <= tolerance
+        if constraint.kind == "alignment":
+            # Aligned in plan: sharing an X or a Y within tolerance.
+            return abs(first[0] - second[0]) <= tolerance or abs(first[1] - second[1]) <= tolerance
+        if constraint.kind == "distance":
+            if constraint.value is None:
+                return False
+            return abs(math.dist(first, second) - constraint.value) <= tolerance
+        # `custom` has no defined semantics here, and inventing one would make a publish gate that
+        # passes for reasons nobody can state.
+        return False
+
+
 def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
     """Wire the capability families together through tokens alone.
 
@@ -750,6 +962,9 @@ def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
         )
         context.capabilities.provide(
             GeometryPayloadSourceToken, _MassingGeometrySource(kernel), version="0.1.0"
+        )
+        context.capabilities.provide(
+            GeometryBackendToken, _MassingGeometryBackend(kernel), version="0.1.0"
         )
         context.logger.info("Massing published as a measurable, anchorable model")
 

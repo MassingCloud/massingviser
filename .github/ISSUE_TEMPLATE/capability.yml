@@ -1,0 +1,29 @@
+name: Capability or format
+description: Something the platform should be able to do, or a format it should read.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Everything here composes through capability tokens, so a new capability is usually a new
+        plugin rather than a change to an existing one. The README's "Not yet built" section lists
+        what is deliberately absent and why — worth checking whether this is already there with a
+        reason attached.
+  - type: textarea
+    id: need
+    attributes:
+      label: What you are trying to do
+      description: The workflow, not the implementation. What breaks without it?
+    validations: { required: true }
+  - type: input
+    id: token
+    attributes:
+      label: Which capability token would provide it
+      description: An existing one, or a proposed name. Leave blank if unsure.
+  - type: textarea
+    id: correctness
+    attributes:
+      label: What would make it wrong
+      description: |
+        The thing most worth writing down. A schedule parser that mis-reads a calendar, an IFC
+        writer that renumbers GlobalIds — the failure that would look like success.

@@ -232,8 +232,13 @@ is that it *should* be.
 web/src/mvmesh.js    the payload reader. Zero dependencies, no three.js, ~120 lines
 web/src/viewer.js    the three.js client: fetch, upload, orbit, click
 web/index.html       the page
+web/vendor/          three.js, pinned and checksummed — not a CDN, because a viewer that needs
+                     the public internet is no use in a site office or behind a proxy
 massingviser/web/    four HTTP routes, standard library only
 ```
+
+The client ships **inside the wheel**, so `pip install massingviser` and `--web` gives you a working
+page rather than a working API and a 404.
 
 Four routes are the whole server-side API:
 
@@ -250,7 +255,18 @@ instead, where the BVH covers the whole model whether or not it has been drawn, 
 the same GlobalId that cost, markup and coordination already key on.
 
 Loading the demo scheme in a real browser: **43 nodes, 43 drawable, one payload, 37 KB**, and on
-reload the plan comes back `fetch: 0`.
+reload the plan comes back `fetch: 0`. That is asserted, not anecdotal — `web/test/render.test.mjs`
+runs it in headless Chrome on every push and reads the framebuffer back.
+
+### Instancing
+
+An IFC model is tessellated in **local** coordinates with the placement read separately, which is
+what makes instancing possible at all: with world coordinates baked in, a window placed a thousand
+times is a thousand distinct meshes, because each one has been moved. Elements sharing a
+representation collapse to one buffer and many 4×4s.
+
+Twelve identical walls: **one mesh, 768 bytes, twelve transforms.** World vertices are reconstructed
+server-side, so the spatial index, clash and bounds see exactly what they always did.
 
 ---
 
@@ -352,11 +368,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest              # 585, the Python side
-cd web && node --test test/*.test.mjs   # 15, the browser side
+python -m pytest                          # 619, the Python side
+cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**600 tests.** Organised by the claim each defends:
+**641 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -368,13 +384,14 @@ cd web && node --test test/*.test.mjs   # 15, the browser side
 | `test_massing.py` | Planar geometry, and that triangulation conserves area for holes and concave rings |
 | `test_capabilities.py` | Money exactness, evaluator safety (five injection attempts), anchoring, issue state machine |
 | `test_delivery.py` | Triage surviving a re-run, links surviving a re-issue, earned value falling on rework, P6 and MS Project identity and units |
-| `test_content.py` | Semver resolution, conflict-checked publish, Procrustes alignment, id-preserving replacement |
+| `test_content.py` | Semver resolution, conflict-checked publish, Procrustes alignment, id-preserving replacement, constraints measured against real coordinates |
 | `test_platform.py` | Interop detection, bounded forecasts, shell bookkeeping, engine scene packages, the payload transfer plan |
 | `test_icdd.py` | Exact IRIs, inverse pairing, three syntaxes round-tripping the same triples, checksum verification, DTD refusal |
 | `test_adapters.py` | IFC parse/tessellate, IFC **write** and read back at the same size, narrow-phase volume, CRS round trip, LOD budgets |
 | `test_integration.py` | The cross-plugin chain, and undo across a whole session |
 | `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes |
 | `web/test/mvmesh.test.mjs` | The **JavaScript** reader, against buffers the Python encoder wrote |
+| `web/test/render.test.mjs` | A real server, the real page, headless Chrome, and the framebuffer read back |
 | `test_architecture.py` | The five rules above, by parsing imports |
 
 The architecture checks are mutation-tested: injecting a plugin cross-import, an `import viser`
@@ -384,9 +401,9 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 558 pass, 27 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 585 pass |
-| `web` | Node 22 — regenerates the fixtures, then reads them | 15 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 586 pass, 33 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 619 pass |
+| `web` | Node 22 + headless Chrome — fixtures, readers, then pixels | 22 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
 as happily if an extra crept in through a transitive dependency, and the thing it exists to prove
@@ -395,7 +412,10 @@ would quietly stop being proven.
 The `web` job **regenerates** the fixtures from the Python encoder and fails if they differ from
 what is checked in, then runs the Node suite against them. That crossing is the only place the two
 implementations of the wire format meet, so a change to either side that breaks the contract fails
-there rather than in someone's browser.
+there rather than in someone's browser. It also verifies the vendored three.js against its recorded
+digests, and finishes by loading the real page in headless Chrome and reading the framebuffer —
+because every other test checks one half, and neither half notices if the two combine into a black
+screen.
 
 ```bash
 ruff check . && ruff format --check . && python -m pytest
@@ -407,23 +427,28 @@ ruff check . && ruff format --check . && python -m pytest
 
 Stated plainly, in the spirit of the repository this is ported from.
 
-- **The authoring geometry backend is nominal** — a port with no solid modeller behind it. It is
-  registered so a real one wins the moment it is installed, and it says what it is.
-- **ICDD validation is structural, not SHACL.** Three syntaxes round-trip and checksums are now
-  verified, but the published shapes are not run. A SHACL engine is a large dependency for failures
-  that are almost always mundane, and the parsed graphs are exposed so a host can run them itself.
+- **The authoring backend is massing-backed, not a solid modeller.** It creates, deletes and
+  restores real records through the command bus and measures constraints against real coordinates,
+  but massing has no operation that moves or rotates a mass — so an edit carrying a transform is
+  **refused by name** rather than accepted and silently dropped.
+- **SHACL is Core only.** Cardinality, datatype, class, node kind, ranges, string tests and
+  enumerations, over single-predicate paths. No SPARQL constraints, no property path expressions,
+  no qualified shapes. A constraint the engine cannot evaluate is *reported* — `report.complete`
+  goes false and names it — because an engine that skips one and answers "conforms" has reported on
+  a shape it never checked.
 - **The vendor programme readers cover the programme, not the calendar.** Tasks, dates, progress,
   WBS, criticality and the dependency graph are read; working calendars, resource assignments and
   constraint arithmetic are left in the file rather than half-parsed.
-- **No instancing.** A thousand identical windows are a thousand meshes. Content addressing dedupes
-  identical *chunks*; per-element instancing needs local geometry plus a placement matrix, which
-  means tessellating IFC without world coordinates — a real change, not a flag.
+- **Instancing is per representation, not per shape.** Elements sharing an IFC representation
+  collapse to one mesh and many transforms. Two elements that happen to be *geometrically* identical
+  but were authored separately still travel twice — recognising that needs a shape descriptor and a
+  tolerance, and a wrong tolerance silently merges two things that differ.
 - **IFC writing is tessellated.** Solids go out as `IfcPolygonalFaceSet`, not as swept solids or
   B-reps, because triangles are what the platform holds. Materials, types and classification are
   not written, since nothing here holds them.
-- **Rendered pixels are not asserted in CI.** The Node suite tests the reader and the Python suite
-  tests the routes; that the two combine into the right image was checked by hand in a browser, not
-  by a screenshot diff.
+- **Massing geometry is not instanced.** Every storey ships its own mesh even where a tower repeats
+  one floor plate forty times. The pipeline supports it; the massing bridge does not yet key on a
+  shared profile.
 
 ## Relationship to `massingifc`
 

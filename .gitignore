@@ -9,3 +9,6 @@ dist/
 venv/
 *.log
 _ref/
+
+# Node
+node_modules/
