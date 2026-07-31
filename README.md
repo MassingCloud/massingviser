@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 619, the Python side
+python -m pytest                          # 631, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**641 tests.** Organised by the claim each defends:
+**653 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -389,9 +389,9 @@ cd web && npm ci && npm run test:all      # 22, the browser side
 | `test_massing.py` | Planar geometry, and that triangulation conserves area for holes and concave rings |
 | `test_capabilities.py` | Money exactness, evaluator safety (five injection attempts), anchoring, issue state machine |
 | `test_delivery.py` | Triage surviving a re-run, links surviving a re-issue, earned value falling on rework, P6 and MS Project identity and units |
-| `test_content.py` | Semver resolution, conflict-checked publish, Procrustes alignment, id-preserving replacement, constraints measured against real coordinates |
+| `test_content.py` | Semver resolution, a publish gate that fires on somebody else's change and not your own, Procrustes alignment, constraints measured against real coordinates |
 | `test_platform.py` | Interop detection, bounded forecasts, shell bookkeeping, engine scene packages, the payload transfer plan |
-| `test_icdd.py` | Exact IRIs, inverse pairing, three syntaxes round-tripping the same triples, checksum verification, DTD refusal |
+| `test_icdd.py` | Exact IRIs, inverse pairing, three syntaxes round-tripping the same triples, checksum verification, DTD refusal, and that SHACL reports every constraint it could not evaluate |
 | `test_adapters.py` | IFC parse/tessellate, IFC **write** and read back at the same size, narrow-phase volume, CRS round trip, LOD budgets |
 | `test_integration.py` | The cross-plugin chain, and undo across a whole session |
 | `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes |
@@ -406,8 +406,8 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 586 pass, 33 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 619 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 598 pass, 33 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 631 pass |
 | `web` | Node 22 + headless Chrome — fixtures, readers, then pixels | 22 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just

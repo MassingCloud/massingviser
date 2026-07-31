@@ -2,7 +2,7 @@
 
 ```bash
 pip install -e ".[all,dev]"
-pytest                                   # 619
+pytest                                   # 631
 cd web && npm ci && npm run test:all     # 22 — readers, then a real browser
 ```
 
