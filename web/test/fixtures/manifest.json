@@ -1,0 +1,313 @@
+{
+  "formatVersion": 1,
+  "generator": "massingviser/0.1.0",
+  "generatedAt": "2026-07-31T17:17:13.611344Z",
+  "sourceUnits": "m",
+  "crs": null,
+  "nodes": [
+    {
+      "globalId": "mass-1:000",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:000",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 0,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 0,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    },
+    {
+      "globalId": "mass-1:001",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:001",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 1,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 1,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    },
+    {
+      "globalId": "mass-1:002",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:002",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 2,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 2,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    },
+    {
+      "globalId": "mass-1:003",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:003",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 3,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 3,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    },
+    {
+      "globalId": "mass-1:004",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:004",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 4,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 4,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    },
+    {
+      "globalId": "mass-1:005",
+      "ifcClass": "IfcBuildingStorey",
+      "parentGlobalId": "mass-1",
+      "levelGlobalId": "mass-1:005",
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "propertySets": {
+        "Pset_QuantityTakeOff": {
+          "Area": 540.0,
+          "Height": 3.6,
+          "Volume": 1944.0
+        }
+      },
+      "relationships": [],
+      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "geometryIndex": 5,
+      "geometry": [
+        {
+          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "geometryIndex": 5,
+          "lod": 0,
+          "faceCount": 12
+        }
+      ]
+    }
+  ],
+  "payloads": [
+    {
+      "id": "1b723c6c9e6156bc3dc65068622b16f1",
+      "role": "geometry",
+      "path": "payloads/1b723c6c9e6156bc3dc65068622b16f1.bin",
+      "encoding": "massingviser-mesh/2",
+      "byteLength": 4448,
+      "lod": 0,
+      "meshCount": 6
+    }
+  ],
+  "realityLayers": [],
+  "indexes": {
+    "byGlobalId": {
+      "mass-1:000": 0,
+      "mass-1:001": 1,
+      "mass-1:002": 2,
+      "mass-1:003": 3,
+      "mass-1:004": 4,
+      "mass-1:005": 5
+    },
+    "byClass": {
+      "IfcBuildingStorey": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "byLevel": {
+      "mass-1:000": [
+        0
+      ],
+      "mass-1:001": [
+        1
+      ],
+      "mass-1:002": [
+        2
+      ],
+      "mass-1:003": [
+        3
+      ],
+      "mass-1:004": [
+        4
+      ],
+      "mass-1:005": [
+        5
+      ]
+    }
+  }
+}

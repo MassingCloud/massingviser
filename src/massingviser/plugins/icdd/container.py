@@ -12,8 +12,10 @@ exposed so a host that wants the published SHACL shapes can run them itself.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
 from .ontology import (
@@ -177,6 +179,70 @@ def invert_link(link: Link) -> Link:
 # ---------------------------------------------------------------------------------------------
 # Serialisation
 # ---------------------------------------------------------------------------------------------
+
+
+#: Algorithms a container may name, mapped to what `hashlib` calls them. A container naming
+#: anything else is reported rather than silently passed: an unverifiable checksum and a verified
+#: one must not look the same in a report.
+CHECKSUM_ALGORITHMS: Mapping[str, str] = MappingProxyType(
+    {
+        "MD5": "md5",
+        "SHA1": "sha1",
+        "SHA-1": "sha1",
+        "SHA256": "sha256",
+        "SHA-256": "sha256",
+        "SHA384": "sha384",
+        "SHA-384": "sha384",
+        "SHA512": "sha512",
+        "SHA-512": "sha512",
+    }
+)
+
+
+def compute_checksum(data: bytes, algorithm: str) -> str | None:
+    """Hex digest, or ``None`` when the algorithm is not one we can compute."""
+    name = CHECKSUM_ALGORITHMS.get(algorithm.strip().upper())
+    if name is None:
+        return None
+    return hashlib.new(name, data).hexdigest()
+
+
+def _checksum_issues(
+    archive: ContainerArchive, document: Document, path: str
+) -> list[ValidationIssue]:
+    """Verify a declared checksum against the bytes actually in the container.
+
+    This is the check that makes a container's own integrity claim mean something. A payload that
+    was swapped, truncated in transit or rebuilt from a different model still satisfies every
+    structural rule -- the file is present, the link resolves, the graph parses. Only the digest
+    says the bytes are the ones the sender hashed.
+    """
+    data = archive.read(path)
+    if data is None:
+        return [ValidationIssue("error", f'Payload "{path}" could not be read.', document.id)]
+
+    algorithm = document.checksum_algorithm or "SHA-256"
+    computed = compute_checksum(data, algorithm)
+    if computed is None:
+        return [
+            ValidationIssue(
+                "warning",
+                f'"{document.name}" declares checksum algorithm "{algorithm}", which this build '
+                "cannot compute, so its integrity is unverified.",
+                document.id,
+            )
+        ]
+    if computed.lower() != document.checksum.strip().lower():
+        return [
+            ValidationIssue(
+                "error",
+                f'"{document.name}" does not match its declared {algorithm} checksum: the '
+                f"container says {document.checksum.strip().lower()[:16]}..., the payload "
+                f"hashes to {computed[:16]}...",
+                document.id,
+            )
+        ]
+    return []
 
 
 def _subject(container_id: str, kind: str, local: str) -> str:
@@ -400,6 +466,16 @@ def validate_container(archive: ContainerArchive, container: Container) -> Valid
                 issues.append(
                     ValidationIssue(
                         "error", f'Payload "{path}" is declared but not present.', document.id
+                    )
+                )
+            elif document.checksum:
+                issues.extend(_checksum_issues(archive, document, path))
+            elif document.checksum_algorithm:
+                issues.append(
+                    ValidationIssue(
+                        "warning",
+                        f'"{document.name}" names a checksum algorithm but carries no checksum.',
+                        document.id,
                     )
                 )
         elif document.kind == "external" and not document.url:

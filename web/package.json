@@ -1,0 +1,18 @@
+{
+  "name": "massingviser-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The browser layer: a reader for the massingviser-mesh payload format, and a three.js viewer built on it.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "fixtures": "python ../web/test/generate_fixtures.py"
+  },
+  "exports": {
+    "./mvmesh": "./src/mvmesh.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

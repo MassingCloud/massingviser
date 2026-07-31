@@ -4,16 +4,17 @@
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/MassingCloud/massingviser)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A federated **AEC platform in pure Python** — a plugin kernel, fifteen capability families,
-content-addressed version control, server-side geometry, and a browser viewer.
+A federated **AEC platform in Python** — a plugin kernel, fifteen capability families,
+content-addressed version control, a server-side geometry pipeline, and two browser front ends.
 
 ```bash
 pip install -e ".[all]"
-python -m massingviser --demo
+python -m massingviser --demo --web
 ```
 
 Opens `http://127.0.0.1:8080`: three massing blocks on a site, a panel that sketches and extrudes,
 a cost panel that prices what you drew, an issues panel that pins to it, and undo across all of it.
+`--web` adds `http://127.0.0.1:8081`, a three.js client drawing the same kernel's geometry.
 
 ---
 
@@ -29,8 +30,8 @@ contracts for fifteen capability families. It states plainly that it **contains 
 [`viser`](https://github.com/viser-project/viser) is the opposite shape: a pure-Python library whose
 entire point is that `pip install` gives you a browser 3D viewer driven from Python.
 
-MassingViser is the join, plus the two things neither had: **version control** and **server-side
-geometry**.
+MassingViser is the join, plus the things neither had: **version control**, a **server-side
+geometry pipeline**, and a browser layer thin enough to be worth reading.
 
 Five rules, checked by `tests/test_architecture.py` rather than asserted in prose:
 
@@ -43,7 +44,8 @@ Five rules, checked by `tests/test_architecture.py` rather than asserted in pros
    than misread.
 5. **Dependencies live in three named layers.** `viewer/` may import viser and numpy; `geometry/`
    may import numpy; `adapters/` may import the optional extras it declares. Everything else —
-   kernel, schema, SDK, storage, vcs and all fifteen families — is **standard library only**.
+   kernel, schema, SDK, storage, vcs, the HTTP layer and all fifteen families — is **standard
+   library only**.
 
 ---
 
@@ -73,11 +75,15 @@ massingviser/
     shell/         headless shell state: layout, notifications, progress, palette, status bar
     engine/        engine-neutral scene packages: semantics, geometry ladders, transfer plans
     icdd/          ISO 21597 containers, RDF/XML codec, 15 link classes, validation
-  geometry/        server-side compute — BVH picking, frustum culling, clash, LOD, and the
-                   content-addressed mesh payload format (numpy)
-  adapters/        optional: IfcOpenShell, trimesh/manifold3d, pyproj — each behind a token
-  viewer/          the viser shell — the ONLY package that renders
+  geometry/        server-side compute — BVH picking, frustum culling, clash, LOD, crease-aware
+                   normals, and the content-addressed mesh payload format (numpy)
+  adapters/        optional: IfcOpenShell (read and write), trimesh/manifold3d, pyproj
+  web/             four HTTP routes over the engine bridge (standard library only)
+  viewer/          the viser shell
   app.py           composition root, and the bridge that makes the families compose
+
+web/               the browser layer — a zero-dependency reader for the payload format, and a
+                   three.js client built on it. Tested under Node against Python-written buffers.
 ```
 
 ---
@@ -131,20 +137,21 @@ WebAssembly. This codebase goes the other way.
 | Version control, diffing, merging | `vcs/` | none |
 | Quantity takeoff, rates, bills, cashflow | `plugins/estimating` | none |
 | Clash triage, validation, revision diff | `plugins/coordination` | none |
-| ISO 21597 containers, RDF/XML | `plugins/icdd` | none |
+| ISO 21597 containers, RDF/XML, Turtle, JSON-LD, checksums | `plugins/icdd` | none |
+| P6 XER and MS Project XML programmes | `plugins/planning/formats` | none |
+| Serving the manifest, payloads, picks and culls | `web/` | none |
 | Picking, frustum culling, broad-phase clash, LOD | `geometry/` | numpy |
-| Mesh encoding, chunking, content addressing | `geometry/payload` | numpy |
+| Mesh encoding, chunking, content addressing, normals | `geometry/payload`, `geometry/normals` | numpy |
 | IFC parsing, tessellation, property sets | `adapters/ifc` | ifcopenshell |
+| IFC writing — tessellated solids, spatial tree | `adapters/ifc_write` | ifcopenshell |
 | Narrow-phase clash — real solid intersection | `adapters/solids` | trimesh, manifold3d |
 | CRS transforms, georeference validation | `adapters/crs` | pyproj |
 
-**What a JavaScript layer will need to do, and nothing more:** upload buffers to the GPU, run the
-camera, forward input events. It sends a ray and receives GlobalIds; it sends a view-projection
-matrix and receives the ids it can see; it sends the payload ids it already holds and receives only
-what changed. It never parses IFC, builds a spatial index, decimates a mesh, or decides what is
-visible.
-
-That contract is now complete on the server side — see [Geometry payloads](#geometry-payloads).
+**What the JavaScript layer does, and nothing more:** upload buffers to the GPU, run the camera,
+forward input events. It sends a ray and receives GlobalIds; it sends a view-projection matrix and
+receives the ids it can see; it sends the payload ids it already holds and receives only what
+changed. It never parses IFC, builds a spatial index, decimates a mesh, computes a normal, or
+decides what is visible. See [The browser layer](#the-browser-layer).
 
 ### One import, six capabilities
 
@@ -184,15 +191,16 @@ conversion path, which is the same argument the scene package itself makes.
 
 ```
 0   char[4]  "MVMS"        16  uint32  vertex_count (chunk total)
-4   uint32   version (1)   20  uint32  index_count
+4   uint32   version (2)   20  uint32  index_count
 8   uint32   mesh_count    24  uint32  lod (0 = finest)
 12  uint32   flags         28  uint32  reserved
 32  directory  mesh_count × { vertex_offset, vertex_count, index_offset, index_count }
     positions  float32[3] × vertex_count
-    indices    uint32     × index_count      ← local to each mesh, so one element slices out clean
+    normals    float32[3] × vertex_count      ← when flags & 1
+    indices    uint32     × index_count       ← local to each mesh, so one element slices out clean
 ```
 
-Three properties, and they are the reason for the shape:
+Four properties, and they are the reason for the shape:
 
 - **Content-addressed.** A payload's id is `sha256(buffer)[:32]`, the same convention the version
   control uses. The id depends on the geometry and nothing else — not the GlobalIds, which live in
@@ -203,9 +211,46 @@ Three properties, and they are the reason for the shape:
 - **LOD'd.** Each level is decimated from the *original*, so error does not compound, and a level
   that fails to cut 30% of the faces above it is dropped rather than shipped — a client should
   never pay a whole transfer for geometry it cannot tell apart.
+- **Shaded, with a crease angle.** Flat shading is right for a wall and smooth shading is right for
+  a scan, and a building contains both. A corner whose face disagrees with its vertex average by
+  more than 30° keeps its own normal and gets a vertex of its own; anything flatter shares. The
+  same setting shades a box flat (three faces at 90° put the average 54.7° off each) and a sphere
+  smooth (adjacent faces differ by a couple of degrees). Normals are recomputed per level, because
+  reusing the finest level's would light a simplified surface as though it kept its detail.
 
 Levels ascend from the finest, and a node carries the whole ladder because choosing a level is the
 client's job: it is the only party that knows the camera.
+
+---
+
+## The browser layer
+
+`web/` is the JavaScript. It is small on purpose — the argument the rest of this repository makes
+is that it *should* be.
+
+```
+web/src/mvmesh.js    the payload reader. Zero dependencies, no three.js, ~120 lines
+web/src/viewer.js    the three.js client: fetch, upload, orbit, click
+web/index.html       the page
+massingviser/web/    four HTTP routes, standard library only
+```
+
+Four routes are the whole server-side API:
+
+| Route | Answers |
+|---|---|
+| `GET /api/manifest` | the scene: nodes, property sets, relationships, indexes, LOD ladders |
+| `GET /api/payload/<id>.bin` | one geometry chunk, `immutable` for a year — the id *is* the content |
+| `POST /api/plan` | given the ids I hold, what do I still need |
+| `POST /api/pick` / `/api/cull` | a ray or a matrix in, GlobalIds out |
+
+Clicking is worth spelling out. three.js could intersect the meshes it holds — but only the ones it
+holds, so anything culled or not yet uploaded would be unclickable. The ray goes to the server
+instead, where the BVH covers the whole model whether or not it has been drawn, and comes back as
+the same GlobalId that cost, markup and coordination already key on.
+
+Loading the demo scheme in a real browser: **43 nodes, 43 drawable, one payload, 37 KB**, and on
+reload the plan comes back `fetch: 0`.
 
 ---
 
@@ -307,10 +352,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest
+python -m pytest              # 585, the Python side
+cd web && node --test test/*.test.mjs   # 15, the browser side
 ```
 
-493 tests. Organised by the claim each defends:
+**600 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -318,15 +364,17 @@ python -m pytest
 | `test_schema.py` | Georeferencing maths, the measurability rule, 4D intent, the record codec |
 | `test_storage.py` | Key encoding (reversibility, Windows device names, traversal), atomic writes, surviving a restart |
 | `test_vcs.py` | Content addressing — dedup, closure depths, chunking, diffs as set operations, three-way merge |
-| `test_geometry.py` | BVH ray/frustum/pair queries, plane extraction, clash penetration, the mesh wire format byte-for-byte |
+| `test_geometry.py` | BVH ray/frustum/pair queries, plane extraction, clash penetration, crease shading against the analytic answer, the wire format byte-for-byte |
 | `test_massing.py` | Planar geometry, and that triangulation conserves area for holes and concave rings |
 | `test_capabilities.py` | Money exactness, evaluator safety (five injection attempts), anchoring, issue state machine |
-| `test_delivery.py` | Triage surviving a re-run, links surviving a re-issue, earned value falling on rework |
+| `test_delivery.py` | Triage surviving a re-run, links surviving a re-issue, earned value falling on rework, P6 and MS Project identity and units |
 | `test_content.py` | Semver resolution, conflict-checked publish, Procrustes alignment, id-preserving replacement |
 | `test_platform.py` | Interop detection, bounded forecasts, shell bookkeeping, engine scene packages, the payload transfer plan |
-| `test_icdd.py` | Exact IRIs, inverse pairing, RDF/XML round trip, DTD and `parseType` refusal |
-| `test_adapters.py` | IFC parse/tessellate, narrow-phase volume, CRS round trip, LOD budgets |
+| `test_icdd.py` | Exact IRIs, inverse pairing, three syntaxes round-tripping the same triples, checksum verification, DTD refusal |
+| `test_adapters.py` | IFC parse/tessellate, IFC **write** and read back at the same size, narrow-phase volume, CRS round trip, LOD budgets |
 | `test_integration.py` | The cross-plugin chain, and undo across a whole session |
+| `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes |
+| `web/test/mvmesh.test.mjs` | The **JavaScript** reader, against buffers the Python encoder wrote |
 | `test_architecture.py` | The five rules above, by parsing imports |
 
 The architecture checks are mutation-tested: injecting a plugin cross-import, an `import viser`
@@ -336,12 +384,18 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 474 pass, 19 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 493 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 558 pass, 27 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 585 pass |
+| `web` | Node 22 — regenerates the fixtures, then reads them | 15 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
 as happily if an extra crept in through a transitive dependency, and the thing it exists to prove
 would quietly stop being proven.
+
+The `web` job **regenerates** the fixtures from the Python encoder and fails if they differ from
+what is checked in, then runs the Node suite against them. That crossing is the only place the two
+implementations of the wire format meet, so a change to either side that breaks the contract fails
+there rather than in someone's browser.
 
 ```bash
 ruff check . && ruff format --check . && python -m pytest
@@ -353,28 +407,29 @@ ruff check . && ruff format --check . && python -m pytest
 
 Stated plainly, in the spirit of the repository this is ported from.
 
-- **No JavaScript layer yet.** The viewer is viser's prebuilt client. A three.js layer that consumes
-  the server's culled id lists and LOD payloads is the next piece, and the server side of that
-  contract is already here.
-- **The 4D schedule basis and the authoring geometry backend are nominal** — a fixed S-curve and a
-  port with no solid modeller behind it. Both are registered so a real implementation wins the
-  moment one is installed, and both say what they are.
-- **Schedule import reads CSV and JSON only.** P6 XER and MS Project XML belong behind the same
-  interface as their own plugin; a half-parser that mis-reads a calendar would be worse.
-- **ICDD is RDF/XML only** — no Turtle, no JSON-LD — and validation is structural rather than SHACL.
-  Checksums are not verified. The parsed graphs are exposed so a host can run the published shapes.
-- **No normals in the mesh format.** Flat shading suits building geometry and smooth shading suits a
-  scan; baking either in would decide shading for every consumer. Deriving them is O(n) in any
-  engine, and the header reserves a flag bit for v2.
+- **The authoring geometry backend is nominal** — a port with no solid modeller behind it. It is
+  registered so a real one wins the moment it is installed, and it says what it is.
+- **ICDD validation is structural, not SHACL.** Three syntaxes round-trip and checksums are now
+  verified, but the published shapes are not run. A SHACL engine is a large dependency for failures
+  that are almost always mundane, and the parsed graphs are exposed so a host can run them itself.
+- **The vendor programme readers cover the programme, not the calendar.** Tasks, dates, progress,
+  WBS, criticality and the dependency graph are read; working calendars, resource assignments and
+  constraint arithmetic are left in the file rather than half-parsed.
 - **No instancing.** A thousand identical windows are a thousand meshes. Content addressing dedupes
-  identical *chunks*; per-element instancing is a different feature and is not pretended to.
-- **No IFC writing.** Reading and tessellation only.
-- **Rendered output is not asserted.** The viewer tests check what the server sends, not pixels.
+  identical *chunks*; per-element instancing needs local geometry plus a placement matrix, which
+  means tessellating IFC without world coordinates — a real change, not a flag.
+- **IFC writing is tessellated.** Solids go out as `IfcPolygonalFaceSet`, not as swept solids or
+  B-reps, because triangles are what the platform holds. Materials, types and classification are
+  not written, since nothing here holds them.
+- **Rendered pixels are not asserted in CI.** The Node suite tests the reader and the Python suite
+  tests the routes; that the two combine into the right image was checked by hand in a browser, not
+  by a screenshot diff.
 
 ## Relationship to `massingifc`
 
 Complementary, not competing. `massingifc` remains the TypeScript reference and the source of the
 schema ids written here. MassingViser is what that architecture looks like in Python, with the
-viewer attached, version control added, and the geometry pipeline moved server-side.
+viewer attached, version control added, the geometry pipeline moved server-side, and a
+browser layer that consumes it.
 
 MIT.

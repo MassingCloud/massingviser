@@ -76,6 +76,28 @@ jobs:
           "
       - run: pytest
 
+  # The browser layer's reader, tested against buffers the Python encoder wrote. This is the only
+  # place the two implementations of the wire format actually meet, so it regenerates the fixtures
+  # from source rather than trusting the checked-in copies -- a Python-side change that breaks the
+  # contract fails here rather than being papered over by a stale fixture.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install -e "."
+      - run: python web/test/generate_fixtures.py
+      - name: Fixtures are current
+        run: git diff --exit-code -- web/test/fixtures
+      - run: node --test test/*.test.mjs
+        working-directory: web
+
   build:
     runs-on: ubuntu-latest
     steps:

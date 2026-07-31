@@ -17,6 +17,12 @@ def main() -> None:
         help=f"comma-separated; available: {', '.join(DEFAULT_PLUGINS)}",
     )
     parser.add_argument("--demo", action="store_true", help="seed a small scheme to look at")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="also serve the three.js client, which draws the same scene from the engine bridge",
+    )
+    parser.add_argument("--web-port", type=int, default=8081)
     arguments = parser.parse_args()
 
     kernel = build_kernel(
@@ -31,6 +37,14 @@ def main() -> None:
 
         seed(app.bridge)
         app.refresh()
+
+    if arguments.web:
+        from .web import serve as serve_web
+
+        # Shares the kernel with the viser viewer rather than running a second one, so the two
+        # clients are looking at the same project and an edit in either shows up in both.
+        serve_web(kernel, app.bridge.loop, host=arguments.host, port=arguments.web_port)
+        print(f"three.js client on http://{arguments.host}:{arguments.web_port}")
 
     import time
 

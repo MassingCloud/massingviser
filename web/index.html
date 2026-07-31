@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MassingViser</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid; grid-template-columns: 1fr 20rem; background: #1a1d21; color: #d6dae0;
+        font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #stage { position: relative; min-width: 0; }
+      canvas { display: block; width: 100%; height: 100%; }
+      aside { border-left: 1px solid #2f343a; padding: 1rem; overflow-y: auto; }
+      h1 { font-size: 14px; margin: 0 0 .25rem; letter-spacing: .02em; }
+      p.lede { margin: 0 0 1rem; color: #8b939d; font-size: 12px; }
+      h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+           color: #8b939d; margin: 1.25rem 0 .5rem; font-weight: 600; }
+      dl { display: grid; grid-template-columns: 1fr auto; gap: .25rem .75rem; margin: 0; }
+      dt { color: #8b939d; }
+      dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+      #selection { color: #7fb2ff; word-break: break-all; }
+      #error { color: #ff8f8f; white-space: pre-wrap; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="stage"><canvas id="canvas"></canvas></div>
+    <aside>
+      <h1>MassingViser</h1>
+      <p class="lede">
+        The browser draws. Everything else &mdash; parsing, indexing, decimating, deciding what is
+        visible &mdash; happened on the server before any of this arrived.
+      </p>
+
+      <h2>Transfer</h2>
+      <dl>
+        <dt>Nodes</dt><dd id="nodes">&mdash;</dd>
+        <dt>Drawable</dt><dd id="drawable">&mdash;</dd>
+        <dt>Payloads fetched</dt><dd id="fetched">&mdash;</dd>
+        <dt>Bytes</dt><dd id="bytes">&mdash;</dd>
+      </dl>
+
+      <h2>Selection</h2>
+      <p id="selection">Click an element. The ray goes to the server; a GlobalId comes back.</p>
+
+      <p id="error"></p>
+    </aside>
+
+    <script type="module">
+      import { SceneViewer } from './src/viewer.js';
+
+      const viewer = new SceneViewer(document.getElementById('canvas'));
+      // Exposed so the scene can be inspected from the console, and so an automated check can
+      // assert on what was actually uploaded rather than on what the page says it uploaded.
+      window.viewer = viewer;
+      const set = (id, value) => { document.getElementById(id).textContent = value; };
+
+      viewer.onSelect = (hit) => {
+        document.getElementById('selection').innerHTML = hit
+          ? `<code>${hit.globalId}</code><br>${hit.distance.toFixed(2)} m from the camera`
+          : 'Nothing under that ray.';
+      };
+
+      try {
+        const status = await viewer.load();
+        set('nodes', status.nodes);
+        set('drawable', status.drawable);
+        set('fetched', status.fetched);
+        set('bytes', status.bytes.toLocaleString());
+        viewer.start();
+      } catch (thrown) {
+        document.getElementById('error').textContent = `Could not load the scene: ${thrown.message}`;
+      }
+    </script>
+  </body>
+</html>

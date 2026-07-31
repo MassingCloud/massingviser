@@ -6,6 +6,7 @@ refused rather than mis-parsed, and checksums are not verified.
 """
 
 from .container import (
+    CHECKSUM_ALGORITHMS,
     Container,
     ContainerArchive,
     ContainerDescription,
@@ -23,6 +24,7 @@ from .container import (
     ValidationReport,
     build_index_graph,
     build_linkset_graph,
+    compute_checksum,
     invert_link,
     validate_container,
     write_container,
@@ -41,9 +43,27 @@ from .ontology import (
 )
 from .plugin import ICDD_COMMANDS, PLUGIN_ID, IcddToken, create_icdd_plugin, icdd_plugin
 from .rdf import Graph, Iri, Literal, RdfError, Triple, parse, serialise
+from .syntaxes import (
+    SYNTAXES,
+    dump,
+    from_jsonld,
+    from_turtle,
+    load,
+    to_jsonld,
+    to_turtle,
+)
 
 __all__ = [
+    "CHECKSUM_ALGORITHMS",
     "CONTAINER_LAYOUT",
+    "SYNTAXES",
+    "compute_checksum",
+    "dump",
+    "from_jsonld",
+    "from_turtle",
+    "load",
+    "to_jsonld",
+    "to_turtle",
     "CT",
     "DEFAULT_PREFIXES",
     "ICDD_COMMANDS",

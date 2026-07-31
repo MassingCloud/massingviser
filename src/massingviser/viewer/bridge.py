@@ -43,6 +43,15 @@ class KernelBridge:
     def kernel(self) -> Kernel[Any]:
         return self._kernel
 
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The kernel's own loop, so a second front end can marshal onto the same thread.
+
+        Exposed rather than duplicated: two front ends each owning a loop would be two kernels, and
+        an edit in one would be invisible to the other.
+        """
+        return self._loop
+
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
         self._loop.call_soon(self._ready.set)
