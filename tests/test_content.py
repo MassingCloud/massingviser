@@ -905,3 +905,168 @@ def test_the_spatial_index_can_say_what_it_holds():
 
     index = SceneIndex({"b": Aabb((0, 0, 0), (1, 1, 1)), "a": Aabb((2, 2, 2), (3, 3, 3))})
     assert index.labels() == ("a", "b")
+
+
+# ---------------------------------------------------------------------------------------------
+# The publish gate
+#
+# It was jammed shut: `changed_since` compared a per-element hash against a whole-model version
+# string, so every element a session touched came back a conflict and no session could publish
+# without `force`. A gate that always fires is a gate everyone learns to force past.
+# ---------------------------------------------------------------------------------------------
+
+
+async def _session_with_one_edit():
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import AuthoringSessionToken, EditCommandToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    session = (await kernel.capabilities.get(AuthoringSessionToken).open("massing")).value
+    edits = kernel.capabilities.get(EditCommandToken)
+    created = (await edits.apply([_block("A", 0)])).value[0]
+    return kernel, session, created
+
+
+async def test_my_own_edit_is_not_a_conflict_with_myself():
+    from massingviser.plugins.authoring import GeometryBackendToken
+
+    kernel, session, element = await _session_with_one_edit()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    assert backend.changed_since(element, session.base_version) is False
+    await kernel.stop()
+
+
+async def test_a_session_that_touched_nothing_else_can_publish():
+    from massingviser.plugins.authoring import PublishToken
+
+    kernel, session, _ = await _session_with_one_edit()
+    publish = kernel.capabilities.get(PublishToken)
+    preview = (await publish.preview(session.id)).value
+    assert len(preview.changed) == 1
+    assert preview.conflicts == ()
+    result = await publish.publish(session.id, version="1.0")
+    assert result.ok, getattr(result, "error", None)
+    await kernel.stop()
+
+
+async def test_a_change_made_outside_the_session_is_still_caught():
+    """The gate has to keep working, not just stop firing."""
+    from massingviser.plugins.authoring import GeometryBackendToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel, _, element = await _session_with_one_edit()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    # A baseline taken now, the way a session takes one when it opens.
+    baseline = backend.current_version("massing")
+
+    await kernel.commands.execute(
+        MASSING_COMMANDS.set_story_count, {"id": element.global_id, "count": 9}
+    )
+    assert backend.changed_since(element, baseline) is True
+    await kernel.stop()
+
+
+async def test_an_unrecognised_baseline_fails_closed():
+    """A version this backend never issued is not a safe one to publish against."""
+    from massingviser.plugins.authoring import GeometryBackendToken
+
+    kernel, _, element = await _session_with_one_edit()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    assert backend.changed_since(element, "a version from somewhere else") is True
+    await kernel.stop()
+
+
+async def test_editing_one_mass_does_not_make_another_look_modified():
+    """A model-wide hash cannot express this, which is why the snapshot is per element."""
+    from massingviser.plugins.authoring import EditCommandToken, GeometryBackendToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel, _, first = await _session_with_one_edit()
+    edits = kernel.capabilities.get(EditCommandToken)
+    second = (await edits.apply([_block("B", 40)])).value[0]
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    baseline = backend.current_version("massing")
+    await kernel.commands.execute(
+        MASSING_COMMANDS.set_story_count, {"id": first.global_id, "count": 7}
+    )
+    assert backend.changed_since(first, baseline) is True
+    assert backend.changed_since(second, baseline) is False
+    await kernel.stop()
+
+
+async def test_current_version_keeps_tracking_edits_after_a_publish():
+    """Returning the last published string would freeze every later session's baseline."""
+    from massingviser.plugins.authoring import EditCommandToken, GeometryBackendToken, PublishToken
+
+    kernel, session, _ = await _session_with_one_edit()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    await kernel.capabilities.get(PublishToken).publish(session.id, version="1.0")
+
+    after_publish = backend.current_version("massing")
+    assert after_publish != "1.0"
+    assert backend.published_version("massing") == "1.0"
+
+    from massingviser.plugins.authoring import AuthoringSessionToken
+
+    await kernel.capabilities.get(AuthoringSessionToken).open("massing")
+    await kernel.capabilities.get(EditCommandToken).apply([_block("C", 80)])
+    assert backend.current_version("massing") != after_publish
+    assert backend.published_version("massing") == "1.0"  # the record of what shipped stands
+    await kernel.stop()
+
+
+async def test_a_level_constraint_checks_every_element_not_just_two():
+    """ "These four slabs are level" has to mean all four."""
+    from massingviser.plugins.authoring import (
+        ConstraintRecord,
+        EditCommandToken,
+        GeometryBackendToken,
+    )
+    from massingviser.schema import ElementRef
+
+    kernel, _, first = await _session_with_one_edit()
+    edits = kernel.capabilities.get(EditCommandToken)
+    second = (await edits.apply([_block("B", 40)])).value[0]
+    # Same footprint, twice as tall, so its centre sits well above the other two.
+    tall = (await edits.apply([_block("C", 80, storeys=9)])).value[0]
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    ref = [ElementRef("massing", e.global_id) for e in (first, second, tall)]
+
+    assert backend.evaluate_constraint(
+        ConstraintRecord(id="1", kind="level", elements=tuple(ref[:2]), tolerance=0.01)
+    )
+    # The first two are level; the third is not. Checking only a pair would pass this.
+    assert not backend.evaluate_constraint(
+        ConstraintRecord(id="2", kind="level", elements=tuple(ref), tolerance=0.01)
+    )
+    await kernel.stop()
+
+
+async def test_a_distance_constraint_over_three_elements_is_ambiguous_not_satisfied():
+    """Three elements have three distances and the record names one value."""
+    from massingviser.plugins.authoring import (
+        ConstraintRecord,
+        EditCommandToken,
+        GeometryBackendToken,
+    )
+    from massingviser.schema import ElementRef
+
+    kernel, _, first = await _session_with_one_edit()
+    edits = kernel.capabilities.get(EditCommandToken)
+    second = (await edits.apply([_block("B", 40)])).value[0]
+    third = (await edits.apply([_block("C", 80)])).value[0]
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    ref = [ElementRef("massing", e.global_id) for e in (first, second, third)]
+    assert backend.evaluate_constraint(
+        ConstraintRecord(
+            id="1", kind="distance", value=40.0, elements=tuple(ref[:2]), tolerance=0.01
+        )
+    )
+    assert not backend.evaluate_constraint(
+        ConstraintRecord(id="2", kind="distance", value=40.0, elements=tuple(ref), tolerance=0.01)
+    )
+    await kernel.stop()

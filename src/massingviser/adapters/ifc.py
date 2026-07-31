@@ -238,6 +238,50 @@ def _quantities(product: Any) -> dict[str, float]:
     return out
 
 
+def _placement(shape: Any, global_id: str) -> tuple[float, ...]:
+    """Read a product's placement as a column-major 4x4.
+
+    IfcOpenShell has expressed this two ways across versions: sixteen floats, and twelve (the
+    affine rows, with the implicit bottom row omitted). Both are handled.
+
+    Anything else **raises**. The tempting alternative -- fall back to the identity -- puts every
+    element in the model at the origin and reports nothing: the file opens, the tree is right, the
+    property sets are right, and the building is a pile at 0,0,0. A version difference must not be
+    able to do that silently.
+    """
+    values = tuple(
+        float(v) for v in np.asarray(shape.transformation.matrix, dtype=float).reshape(-1)
+    )
+    if len(values) == 16:
+        return values
+    if len(values) == 12:
+        # Column-major 4x3: three basis columns then the translation. The missing fourth row of
+        # each column is (0, 0, 0, 1).
+        return (
+            values[0],
+            values[1],
+            values[2],
+            0.0,
+            values[3],
+            values[4],
+            values[5],
+            0.0,
+            values[6],
+            values[7],
+            values[8],
+            0.0,
+            values[9],
+            values[10],
+            values[11],
+            1.0,
+        )
+    raise ValueError(
+        f"IfcOpenShell gave a {len(values)}-element placement for {global_id}; this build "
+        "understands 12 or 16. Falling back to the identity would silently stack the whole "
+        "model at the origin."
+    )
+
+
 def _tessellate(
     file: Any, products: Sequence[Any], placements: dict[str, tuple[tuple[float, ...], int]]
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -271,13 +315,9 @@ def _tessellate(
             vertices = np.asarray(geometry.verts, dtype=np.float64).reshape(-1, 3)
             faces = np.asarray(geometry.faces, dtype=np.int64).reshape(-1, 3)
             if len(vertices) and len(faces):
-                matrix = tuple(
-                    float(v)
-                    for v in np.asarray(shape.transformation.matrix, dtype=float).reshape(-1)
-                )
                 shapes[global_id] = (vertices, faces)
                 placements[global_id] = (
-                    matrix if len(matrix) == 16 else IDENTITY_TRANSFORM,
+                    _placement(shape, global_id),
                     int(getattr(geometry, "id", 0) or 0),
                 )
         if not iterator.next():

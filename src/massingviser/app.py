@@ -739,7 +739,7 @@ class _MassingGeometryBackend:
     refuses it.
     """
 
-    __slots__ = ("_kernel", "_published")
+    __slots__ = ("_kernel", "_published", "_snapshots")
 
     #: Operations massing can actually carry out.
     SUPPORTED = frozenset({"create", "delete", "restore"})
@@ -747,44 +747,94 @@ class _MassingGeometryBackend:
     def __init__(self, kernel: Kernel[Any]) -> None:
         self._kernel = kernel
         self._published: dict[str, str] = {}
+        #: Model version -> the per-element signatures as they stood when that version was minted.
+        #: A conflict check needs the *element's* state at a point in time, and a single model-wide
+        #: hash cannot answer that -- see `changed_since`.
+        self._snapshots: dict[str, dict[str, str]] = {}
 
     # -- geometry state ------------------------------------------------------------------------
 
-    def _signature(self, mass_id: str | None = None) -> str:
-        """A content hash of the geometry, used as the version.
+    def _element_signatures(self) -> dict[str, str]:
+        """A content hash per mass, derived from geometry rather than from a counter.
 
-        Derived from the geometry itself rather than from a counter, so two sessions that made the
-        same edit agree, and a session that changed nothing does not look like it did. The same
-        convention ``massingviser.vcs`` uses, for the same reason.
+        Per element, not just per model: two sessions that made the same edit agree, a session that
+        changed nothing does not look like it did, and -- the part a model-wide hash cannot do --
+        one element moving does not make every other element look modified.
         """
         masses = self._kernel.capabilities.get(MassingToken)
         stories = self._kernel.capabilities.get(StoryToken)
         profiles = self._kernel.capabilities.get(ProfileToken)
         if masses is None or stories is None or profiles is None:
-            return ""
+            return {}
 
-        parts: list[str] = []
+        signatures: dict[str, str] = {}
         for mass in masses.list():
-            if mass_id is not None and mass.id != mass_id:
-                continue
             profile = profiles.get(mass.profile_id)
-            parts.append(
-                repr(
-                    (
-                        mass.id,
-                        tuple(to_xy(profile.points)) if profile else (),
-                        tuple((s.index, s.height, s.elevation) for s in stories.stories(mass.id)),
-                    )
+            payload = repr(
+                (
+                    mass.id,
+                    tuple(to_xy(profile.points)) if profile else (),
+                    tuple((s.index, s.height, s.elevation) for s in stories.stories(mass.id)),
                 )
             )
-        return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:32]
+            signatures[mass.id] = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+        return signatures
+
+    def _signature(self) -> str:
+        """One hash over the whole model, built from the per-element hashes."""
+        signatures = self._element_signatures()
+        joined = "|".join(f"{key}:{value}" for key, value in sorted(signatures.items()))
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
 
     def current_version(self, model_id: Any) -> str | None:
-        return self._published.get(str(model_id)) or self._signature() or None
+        """The version of the geometry *as it is now*, and a snapshot taken alongside it.
+
+        Deliberately not "the last published version". A session opens against whatever the model
+        currently is; returning the last published string instead would hand every later session a
+        baseline that stopped tracking edits the moment somebody published.
+        """
+        version = self._signature()
+        # Remembered so `changed_since` can compare like with like later. Only ever added to for a
+        # version somebody actually asked for, so this holds one entry per session, not per edit.
+        self._snapshots.setdefault(version, self._element_signatures())
+        return version or None
+
+    def published_version(self, model_id: Any) -> str | None:
+        """What was last published for this model, which is not the same as its current state."""
+        return self._published.get(str(model_id))
 
     def changed_since(self, element: Any, since_version: str) -> bool:
-        """Whether this element moved since that version -- the other half of a conflict check."""
-        return self._signature(getattr(element, "global_id", None)) != since_version
+        """Whether this element changed since that version, other than through this backend.
+
+        The comparison is **per element against the snapshot taken when that version was minted**.
+        Comparing an element's own hash against a model-wide version string can never match, which
+        made every touched element a conflict and jammed the publish gate shut for everyone.
+
+        Edits applied through `apply` refresh the snapshots, because those are changes the caller
+        already knows it made. What that leaves detectable is a change from *outside* this
+        backend -- a direct massing command, another process. Two concurrent sessions editing
+        through this same object are indistinguishable to it, and it does not pretend otherwise.
+        """
+        snapshot = self._snapshots.get(since_version)
+        global_id = getattr(element, "global_id", None)
+        if snapshot is None:
+            # An unrecognised baseline is not a safe one. Failing closed makes the caller re-open
+            # against a version this backend actually issued.
+            return True
+        return snapshot.get(global_id) != self._element_signatures().get(global_id)
+
+    def _absorb(self, elements: Sequence[Any]) -> None:
+        """Fold edits this backend performed into every live baseline."""
+        current = self._element_signatures()
+        for snapshot in self._snapshots.values():
+            for element in elements:
+                global_id = getattr(element, "global_id", None)
+                if global_id is None:
+                    continue
+                if global_id in current:
+                    snapshot[global_id] = current[global_id]
+                else:
+                    snapshot.pop(global_id, None)
 
     async def publish(self, model_id: Any, version: str) -> Any:
         self._published[str(model_id)] = version
@@ -808,6 +858,8 @@ class _MassingGeometryBackend:
             if not result.ok:
                 return err(result.error)
             touched.append(result.value)
+        # These are changes the caller just made, so they are not somebody else's changes.
+        self._absorb(touched)
         return ok(tuple(touched))
 
     async def _one(self, operation: Any) -> Any:
@@ -868,6 +920,7 @@ class _MassingGeometryBackend:
                 await self._kernel.commands.execute(
                     MASSING_COMMANDS.restore_mass, {"id": operation.element.global_id}
                 )
+        self._absorb([o.element for o in operations if o.element is not None])
         return ok(None)
 
     # -- constraints ---------------------------------------------------------------------------
@@ -913,18 +966,24 @@ class _MassingGeometryBackend:
             # through on a constraint nobody could check.
             return False
 
-        first, second = points[0], points[1]
+        first = points[0]
         tolerance = max(constraint.tolerance, 0.0)
 
+        # Every element, not just the first two. "These four slabs are level" has to mean all four;
+        # checking a pair and reporting on the set would pass a constraint that does not hold.
         if constraint.kind == "level":
-            return abs(first[2] - second[2]) <= tolerance
+            return all(abs(point[2] - first[2]) <= tolerance for point in points[1:])
         if constraint.kind == "alignment":
-            # Aligned in plan: sharing an X or a Y within tolerance.
-            return abs(first[0] - second[0]) <= tolerance or abs(first[1] - second[1]) <= tolerance
+            # Aligned in plan: the whole set shares an X, or the whole set shares a Y.
+            return all(abs(point[0] - first[0]) <= tolerance for point in points[1:]) or all(
+                abs(point[1] - first[1]) <= tolerance for point in points[1:]
+            )
         if constraint.kind == "distance":
-            if constraint.value is None:
+            # Inherently a pair. Three elements have three distances and the record names one
+            # value, so the constraint is ambiguous rather than satisfied.
+            if constraint.value is None or len(points) != 2:
                 return False
-            return abs(math.dist(first, second) - constraint.value) <= tolerance
+            return abs(math.dist(first, points[1]) - constraint.value) <= tolerance
         # `custom` has no defined semantics here, and inventing one would make a publish gate that
         # passes for reasons nobody can state.
         return False

@@ -134,6 +134,11 @@ class NodeShape:
     target_objects_of: tuple[str, ...] = ()
     properties: tuple[PropertyShape, ...] = ()
     deactivated: bool = False
+    #: Constraint parameters on the *node shape itself* that this engine cannot evaluate, plus a
+    #: marker for any property shape whose path it could not express. Held here because scanning
+    #: only property parameters misses `sh:sparql`, `sh:and`, `sh:not` and every other node-level
+    #: component -- and missing them makes `complete` claim a shape was checked when it was not.
+    unsupported: tuple[str, ...] = ()
 
 
 def _local(iri: str) -> str:
@@ -157,20 +162,38 @@ def parse_shapes(graph: Graph) -> tuple[NodeShape, ...]:
     shapes: list[NodeShape] = []
     for subject in graph.subjects_of_type(f"{SH}NodeShape"):
         properties: list[PropertyShape] = []
+        # Node-level parameters, scanned so `sh:sparql`, `sh:and`, `sh:not`, `sh:node` and the rest
+        # are reported rather than passing unnoticed.
+        unsupported: list[str] = [
+            _local(triple.predicate)
+            for triple in graph
+            if triple.subject == subject
+            and triple.predicate.startswith(SH)
+            and _local(triple.predicate) not in SUPPORTED
+        ]
         for entry in _values(graph, subject, f"{SH}property"):
             if not isinstance(entry, Iri):
+                unsupported.append("property (inline shape)")
                 continue
             node = entry.value
             path = graph.value(node, f"{SH}path")
             if not isinstance(path, Iri):
                 # Property paths beyond a single predicate (sequences, alternatives, inverse) are
-                # a language of their own; a shape using one is surfaced by `unsupported` below.
+                # a language of their own. Recorded, because skipping one silently would leave the
+                # report claiming a constraint held when it was never evaluated.
+                unsupported.append("path (not a single predicate)")
                 continue
             parameters: dict[str, list[Any]] = {}
             for triple in graph:
                 if triple.subject != node or not triple.predicate.startswith(SH):
                     continue
                 parameters.setdefault(_local(triple.predicate), []).append(triple.object)
+            # `sh:in` takes an rdf:List, and that list lives in the *shapes* graph -- so it is
+            # expanded here, where that graph is in hand, rather than at evaluation time where
+            # only the data graph is. Left unexpanded, the list head becomes the sole permitted
+            # value and every real value is reported as not permitted.
+            if "in" in parameters:
+                parameters["in"] = _permitted_values(parameters["in"], graph)
             severity_value = graph.value(node, f"{SH}severity")
             properties.append(
                 PropertyShape(
@@ -208,6 +231,7 @@ def parse_shapes(graph: Graph) -> tuple[NodeShape, ...]:
                 ),
                 properties=tuple(properties),
                 deactivated=(graph.literal(subject, f"{SH}deactivated") or "").lower() == "true",
+                unsupported=tuple(sorted(set(unsupported))),
             )
         )
     return tuple(shapes)
@@ -295,6 +319,7 @@ def _check(
 
     allowed = parameters.get("in")
     if allowed:
+        # Already expanded at parse time, where the shapes graph was in hand.
         permitted = {_plain(entry) for entry in allowed}
         for value in values:
             if _plain(value) not in permitted:
@@ -355,10 +380,45 @@ def _check(
     return failures
 
 
+def _rdf_list(head: Any, graph: Graph) -> list[Any] | None:
+    """Expand an ``rdf:List``, or ``None`` if this is not one.
+
+    ``sh:in`` takes a list, not a repeated predicate. Treating the list *head* as the permitted
+    value makes every real value fail the constraint -- a shape that permits "internal" would
+    report "internal" as not permitted, which reads like a data problem and is a reader problem.
+    """
+    if not isinstance(head, Iri):
+        return None
+    values: list[Any] = []
+    node: str | None = head.value
+    seen: set[str] = set()
+    while node and node != f"{NS.rdf}nil":
+        if node in seen:  # a cyclic list is malformed; stop rather than spin
+            return values
+        seen.add(node)
+        first = graph.value(node, f"{NS.rdf}first")
+        if first is None:
+            return values or None
+        values.append(first)
+        rest = graph.value(node, f"{NS.rdf}rest")
+        node = rest.value if isinstance(rest, Iri) else None
+    return values
+
+
+def _permitted_values(entries: Sequence[Any], graph: Graph) -> list[Any]:
+    """The values ``sh:in`` allows, whether written as an rdf:List or a repeated predicate."""
+    permitted: list[Any] = []
+    for entry in entries:
+        expanded = _rdf_list(entry, graph)
+        permitted.extend([entry] if expanded is None else expanded)
+    return permitted
+
+
 def unsupported_parameters(shapes: Iterable[NodeShape]) -> tuple[str, ...]:
     """Constraint parameters present on the shapes that this engine does not evaluate."""
     found: set[str] = set()
     for shape in shapes:
+        found.update(shape.unsupported)
         for property_shape in shape.properties:
             found.update(name for name in property_shape.parameters if name not in SUPPORTED)
     return tuple(sorted(found))

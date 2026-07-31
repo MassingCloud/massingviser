@@ -815,3 +815,57 @@ def test_shapes_can_arrive_in_any_syntax():
     graph = from_turtle(SHAPES)
     for syntax in SYNTAXES:
         assert len(parse_shapes(load(dump(graph, syntax), syntax))) == 1
+
+
+def test_a_node_level_constraint_it_cannot_run_is_reported():
+    """Scanning only property parameters misses sh:sparql, sh:and, sh:not -- every node-level
+    component -- and a shape carrying one would come back `conforms` and `complete` without ever
+    having been evaluated."""
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:sparql ct:q ; sh:not ct:x .
+"""
+    report = _run(shapes=shapes)
+    assert not report.complete
+    assert "sparql" in report.unsupported and "not" in report.unsupported
+
+
+def test_a_property_path_it_cannot_express_is_reported_not_skipped():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
+ct:r sh:path "not an iri" ; sh:minCount 1 .
+"""
+    report = _run(shapes=shapes)
+    assert not report.complete
+    assert any("path" in name for name in report.unsupported)
+
+
+SH_IN_LIST = """<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:sh="http://www.w3.org/ns/shacl#" xmlns:ct="urn:ct:">
+  <sh:NodeShape rdf:about="urn:ct:S"><sh:targetClass rdf:resource="urn:ct:Doc"/>
+    <sh:property rdf:resource="urn:ct:r"/></sh:NodeShape>
+  <rdf:Description rdf:about="urn:ct:r"><sh:path rdf:resource="urn:ct:kind"/>
+    <sh:in rdf:resource="urn:ct:l1"/></rdf:Description>
+  <rdf:Description rdf:about="urn:ct:l1"><rdf:first>internal</rdf:first>
+    <rdf:rest rdf:resource="urn:ct:l2"/></rdf:Description>
+  <rdf:Description rdf:about="urn:ct:l2"><rdf:first>external</rdf:first>
+    <rdf:rest rdf:resource="http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/></rdf:Description>
+</rdf:RDF>"""
+
+
+def test_sh_in_written_as_an_rdf_list_permits_its_members():
+    """`sh:in` takes a list. Reading the list *head* as the one permitted value makes a shape that
+    allows "internal" report "internal" as not allowed -- a reader bug that reads like a data one."""
+    data = from_turtle('@prefix ct: <urn:ct:> .\nct:d1 a ct:Doc ; ct:kind "internal" .\n')
+    assert shacl_validate(data, parse(SH_IN_LIST)).results == ()
+
+
+def test_sh_in_as_a_list_still_rejects_a_value_outside_it():
+    data = from_turtle('@prefix ct: <urn:ct:> .\nct:d1 a ct:Doc ; ct:kind "nonsense" .\n')
+    results = shacl_validate(data, parse(SH_IN_LIST)).results
+    assert len(results) == 1
+    assert "external" in results[0].message and "internal" in results[0].message
