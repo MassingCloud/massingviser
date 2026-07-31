@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -566,13 +567,20 @@ class _MassingGeometrySource:
     anything. Encoding a tower is milliseconds; doing it on every camera move would not be.
     """
 
-    __slots__ = ("_kernel", "_signature", "_set", "_refs")
+    __slots__ = ("_kernel", "_lock", "_state")
 
     def __init__(self, kernel: Kernel[Any]) -> None:
         self._kernel = kernel
-        self._signature: Any = None
-        self._set: Any = None
-        self._refs: tuple[Any, ...] = ()
+        self._lock = threading.Lock()
+        #: ``(signature, payload set, payload refs)``, rebound as **one** object.
+        #:
+        #: Three separate attributes could be read half-updated: the web server is a
+        #: ThreadingHTTPServer, so two manifest requests during an edit could have one thread
+        #: publish the new set and signature and, before it published the matching refs, let the
+        #: other thread see a signature that already matched and return the *previous* refs. The
+        #: manifest then declared payloads the scene no longer contained and the export was
+        #: rejected outright. A single rebind cannot be observed halfway.
+        self._state: tuple[Any, Any, tuple[Any, ...]] | None = None
 
     def _inputs(self) -> tuple[Any, dict[str, tuple[Any, Any]]]:
         masses = self._kernel.capabilities.get(MassingToken)
@@ -628,12 +636,20 @@ class _MassingGeometrySource:
                 )
         return tuple(signature), meshes
 
-    def _payloads(self) -> Any:
+    def _current(self) -> tuple[Any, Any, tuple[Any, ...]]:
+        """The payload set and its refs, always from the same build."""
         signature, meshes = self._inputs()
-        if signature != self._signature or self._set is None:
-            self._set = build_geometry_payloads(meshes)
-            self._signature = signature
-            self._refs = tuple(
+        state = self._state
+        if state is not None and state[0] == signature:
+            return state
+        with self._lock:
+            # Re-checked under the lock: another thread may have built this same signature while
+            # this one waited, and rebuilding it again would be pure duplicated work.
+            state = self._state
+            if state is not None and state[0] == signature:
+                return state
+            built = build_geometry_payloads(meshes)
+            refs = tuple(
                 PayloadRef(
                     id=payload.id,
                     role="geometry",
@@ -643,18 +659,18 @@ class _MassingGeometrySource:
                     lod=payload.lod,
                     mesh_count=payload.mesh_count,
                 )
-                for payload in self._set.payloads
+                for payload in built.payloads
             )
-        return self._set
+            self._state = (signature, built, refs)
+            return self._state
 
     # -- GeometryPayloadSource ---------------------------------------------------------------
 
     def payload_refs(self) -> Sequence[Any]:
-        self._payloads()
-        return self._refs
+        return self._current()[2]
 
     def geometry(self) -> Mapping[str, Sequence[GeometryRef]]:
-        built = self._payloads()
+        built = self._current()[1]
         return {
             global_id: tuple(
                 GeometryRef(
@@ -669,7 +685,7 @@ class _MassingGeometrySource:
         }
 
     def read(self, payload_id: str) -> bytes | None:
-        found = self._payloads().by_id(payload_id)
+        found = self._current()[1].by_id(payload_id)
         return found.data if found is not None else None
 
 

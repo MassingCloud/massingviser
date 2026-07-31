@@ -429,3 +429,103 @@ def test_the_vendored_dependency_matches_its_recorded_digest():
     for name, expected in lock["files"].items():
         data = (lock_path.parent / name).read_bytes()
         assert hashlib.sha256(data).hexdigest() == expected["sha256"], name
+
+
+# ---------------------------------------------------------------------------------------------
+# Concurrency at the geometry cache
+#
+# The web server is a ThreadingHTTPServer, so two manifest requests arriving during an edit is the
+# normal case rather than an exotic one. The cache used to hold its signature, payload set and refs
+# in three attributes and publish them one at a time, which could be read halfway through.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_two_readers_during_an_edit_never_see_a_half_updated_cache():
+    """The manifest declared payloads the scene no longer contained, and the export was rejected.
+
+    Reproduced by delaying inside the *refs* construction -- after the new set and signature were
+    published and before the matching refs were -- which is exactly the window a second request
+    used to land in.
+    """
+    import threading
+    import time
+
+    import massingviser.app as module
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    sketched = await kernel.commands.execute(
+        MASSING_COMMANDS.sketch_profile,
+        {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], "name": "A"},
+    )
+    created = await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {"name": "A", "profile_id": sketched.value, "story_count": 3, "story_height": 3.5},
+    )
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    source.payload_refs()  # warm the cache
+
+    # Change the geometry so the next read has to rebuild.
+    await kernel.commands.execute(
+        MASSING_COMMANDS.set_story_count, {"id": created.value.id, "count": 9}
+    )
+
+    original = module.payload_path
+    inside = threading.Event()
+
+    def slow(*args, **kwargs):
+        inside.set()
+        time.sleep(0.4)
+        return original(*args, **kwargs)
+
+    module.payload_path = slow
+    observed: dict[str, set[str]] = {}
+
+    def rebuild():
+        source.payload_refs()
+
+    def read():
+        inside.wait(5)
+        time.sleep(0.15)  # land inside the publish window
+        observed["declared"] = {ref.id for ref in source.payload_refs()}
+        observed["referenced"] = {
+            level.payload_id for ladder in source.geometry().values() for level in ladder
+        }
+
+    builder = threading.Thread(target=rebuild)
+    reader = threading.Thread(target=read)
+    builder.start()
+    reader.start()
+    builder.join()
+    reader.join()
+    module.payload_path = original
+
+    # Every payload the nodes point at is one the manifest declares. When this failed,
+    # `build_scene_package` refused the export outright.
+    assert observed["declared"] == observed["referenced"]
+    await kernel.stop()
+
+
+async def test_the_cache_is_not_rebuilt_when_nothing_changed():
+    """The guard that makes caching worth having: same geometry, same object."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    sketched = await kernel.commands.execute(
+        MASSING_COMMANDS.sketch_profile,
+        {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], "name": "A"},
+    )
+    await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {"name": "A", "profile_id": sketched.value, "story_count": 3, "story_height": 3.5},
+    )
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    first = source.payload_refs()
+    assert source.payload_refs() is first
+    await kernel.stop()
