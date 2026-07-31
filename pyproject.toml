@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "massingviser"
+version = "0.1.0"
+description = "A federated AEC kernel, fifteen capability families, content-addressed version control and a browser viewer — in pure Python."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "MassingCloud" }]
+keywords = ["aec", "bim", "ifc", "viewer", "version-control", "massing", "plugin-architecture"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+# The kernel, schema, SDK, storage, version control and all fifteen capability families have
+# **no** runtime dependencies. viser is needed only by `massingviser.viewer`, and numpy only by
+# `massingviser.geometry` and the viewer. `tests/test_architecture.py` fails the build if that
+# stops being true.
+dependencies = ["viser>=1.0.0,<2.0.0", "numpy>=1.24,<3.0.0"]
+
+[project.optional-dependencies]
+# Server-side IFC: parsing, tessellation, property and quantity sets.
+ifc = ["ifcopenshell>=0.8.0"]
+# Narrow-phase clash: real solid intersection rather than bounding boxes.
+solids = ["trimesh>=4.0", "manifold3d>=2.0"]
+# Coordinate reference systems and georeference validation.
+crs = ["pyproj>=3.6"]
+# Everything optional at once.
+all = ["ifcopenshell>=0.8.0", "trimesh>=4.0", "manifold3d>=2.0", "pyproj>=3.6"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+massingviser = "massingviser.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/MassingCloud/massingviser"
+Repository = "https://github.com/MassingCloud/massingviser"
+"Reference implementation" = "https://github.com/MassingCloud/massingifc"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/massingviser"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/massingviser", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = [
+    # pyproj's own internals, on a code path we do not choose. Not ours to fix, and not worth
+    # drowning the test output over.
+    "ignore:Conversion of an array with ndim > 0 to a scalar:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
