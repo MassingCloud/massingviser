@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Generic, Literal, Mapping, Protocol, Sequence, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeVar
 
 from .capabilities import CapabilityProvider, CapabilityRegistry, CapabilityToken
 from .commands import CommandBus, CommandDefinition, CommandInfo
@@ -13,7 +14,7 @@ from .events import EmitReport, EventBus, EventHandler
 from .logging import Logger, create_logger
 from .permissions import PermissionService
 from .persistence import NamespacedPersistence, PersistenceEngine
-from .result import Err, Ok, Result, attempt_async, err, ok
+from .result import Result, attempt_async, err, ok
 from .semver import satisfies
 from .state import Slice, StateStore
 from .telemetry import TelemetrySink
@@ -51,7 +52,7 @@ class PluginManifest:
 class Plugin(Protocol):
     manifest: PluginManifest
 
-    def activate(self, context: "PluginContext") -> Any: ...
+    def activate(self, context: PluginContext) -> Any: ...
 
 
 PluginStatus = Literal["registered", "active", "inactive", "failed", "quarantined"]
@@ -135,7 +136,7 @@ class PluginState:
         """Define a slice under this plugin's namespace. Released automatically on deactivate."""
         return self._store.define_slice(f"{self._plugin_id}/{name}", initial)
 
-    def get_slice(self, namespace: str) -> "Slice[Any] | None":
+    def get_slice(self, namespace: str) -> Slice[Any] | None:
         """Read another namespace, for cross-plugin composition. Fully qualified name required."""
         return self._store.get_slice(namespace)
 

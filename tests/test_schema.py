@@ -12,9 +12,9 @@ import pytest
 from massingviser.schema import (
     ALL_SCHEMAS,
     CURRENT_VERSION,
-    SCHEMA,
     DEFAULT_TASK_IFC_RELATIONSHIP,
     METRES_PER_UNIT,
+    SCHEMA,
     Extent,
     GeoReference,
     Provenance,
@@ -28,7 +28,6 @@ from massingviser.schema import (
     measurability_reason,
     parse_crs_code,
 )
-
 
 # ---------------------------------------------------------------------------------------------
 # Georeferencing
@@ -221,7 +220,9 @@ def test_records_round_trip_through_json():
         name="Plot",
         base_elevation=2.5,
     )
-    revived = json.loads(json.dumps(original, default=record_default), object_hook=record_object_hook)
+    revived = json.loads(
+        json.dumps(original, default=record_default), object_hook=record_object_hook
+    )
     assert revived == original
     # Tuple fields must come back as tuples: JSON has one sequence type, and a silently-listified
     # field fails nothing until something checks.
@@ -244,7 +245,9 @@ def test_nested_records_round_trip():
         taken_at="2026-01-01T00:00:00Z",
         elements=(ElementRef(model_id="m1", global_id="E1"),),
     )
-    revived = json.loads(json.dumps(original, default=record_default), object_hook=record_object_hook)
+    revived = json.loads(
+        json.dumps(original, default=record_default), object_hook=record_object_hook
+    )
     assert revived == original
     assert isinstance(revived.source, QuantitySource)
     assert isinstance(revived.elements[0], ElementRef)

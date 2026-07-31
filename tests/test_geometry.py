@@ -114,7 +114,14 @@ def test_a_frustum_keeps_what_is_in_front_of_every_plane():
     labels, boxes = _grid()
     index = Bvh(labels, boxes)
     # Inward normal along -x with d=6 keeps x <= 6; the rest are wide open.
-    planes = [(-1, 0, 0, 6), (1, 0, 0, 100), (0, -1, 0, 100), (0, 1, 0, 100), (0, 0, -1, 100), (0, 0, 1, 100)]
+    planes = [
+        (-1, 0, 0, 6),
+        (1, 0, 0, 100),
+        (0, -1, 0, 100),
+        (0, 1, 0, 100),
+        (0, 0, -1, 100),
+        (0, 0, 1, 100),
+    ]
     inside = index.query_frustum(planes)
     assert len(inside) == 40  # columns x = 0..3, ten rows each
     assert all(int(label[1:].split("-")[0]) * 2 <= 6 for label in inside)
@@ -140,10 +147,22 @@ def test_pairwise_overlap_finds_only_real_pairs():
 def _orthographic(half: float) -> list[float]:
     """Column-major orthographic matrix, translation at 12-14, looking down -z."""
     return [
-        1 / half, 0, 0, 0,
-        0, 1 / half, 0, 0,
-        0, 0, -1 / half, 0,
-        0, 0, 0, 1,
+        1 / half,
+        0,
+        0,
+        0,
+        0,
+        1 / half,
+        0,
+        0,
+        0,
+        0,
+        -1 / half,
+        0,
+        0,
+        0,
+        0,
+        1,
     ]
 
 

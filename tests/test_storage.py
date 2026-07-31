@@ -9,8 +9,6 @@ they were records.
 from __future__ import annotations
 
 import os
-import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -245,9 +243,8 @@ async def test_backups_survive_a_real_adapter(root):
 async def test_a_project_survives_a_restart(root):
     """The whole point of the package."""
     from massingviser import build_kernel
-    from massingviser.plugins.massing import MASSING_COMMANDS, MassingToken
-
     from massingviser.app import filesystem_storage
+    from massingviser.plugins.massing import MASSING_COMMANDS, MassingToken
 
     # Records are frozen dataclasses, so the adapter needs the schema codec. Wiring that is the
     # composition root's job -- a bare adapter handles values and bytes, nothing richer.
@@ -265,9 +262,7 @@ async def test_a_project_survives_a_restart(root):
             {"name": "Block A", "profile_id": profile, "story_count": 11},
         )
     ).value
-    saved = await kernel.persistence.save(
-        "session", "massingifc.session", kernel.state.snapshot()
-    )
+    saved = await kernel.persistence.save("session", "massingifc.session", kernel.state.snapshot())
     assert saved.ok
     await kernel.stop()
 

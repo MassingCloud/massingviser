@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ...kernel import CommandDefinition, CommandInvocation, PluginContext, UIContribution
 from ...schema import FamilyRepositoryRecord
@@ -98,9 +99,7 @@ def create_families_plugin(*, clock: Clock | None = None, ids: IdFactory | None 
             return {"instance_id": instance_id, "previous": previous}
 
         async def upgrade(params: Mapping[str, Any], _ctx: Any) -> Any:
-            return _unwrap(
-                await versions.upgrade(params["instance_ids"], params["to_version"])
-            )
+            return _unwrap(await versions.upgrade(params["instance_ids"], params["to_version"]))
 
         for command in (
             CommandDefinition(

@@ -9,8 +9,9 @@ making the failure branch visible in the type. Kernel APIs that invoke plugin-su
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar, Union
+from typing import Any, Generic, TypeVar
 
 from .errors import KernelError, KernelErrorCode, to_kernel_error
 
@@ -44,7 +45,7 @@ class Err(Generic[E]):
         return False
 
 
-Result = Union[Ok[T], Err[E]]
+Result = Ok[T] | Err[E]
 
 
 def ok(value: T = None) -> Ok[T]:  # type: ignore[assignment]
@@ -55,15 +56,15 @@ def err(error: E) -> Err[E]:
     return Err(error)
 
 
-def is_ok(result: "Result[T, E]") -> bool:
+def is_ok(result: Result[T, E]) -> bool:
     return result.ok
 
 
-def is_err(result: "Result[T, E]") -> bool:
+def is_err(result: Result[T, E]) -> bool:
     return not result.ok
 
 
-def unwrap(result: "Result[T, E]") -> T:
+def unwrap(result: Result[T, E]) -> T:
     """Unwrap a success, or raise the failure. Use at trust boundaries, not in plugin code."""
     if result.ok:
         return result.value  # type: ignore[union-attr]
@@ -73,16 +74,16 @@ def unwrap(result: "Result[T, E]") -> T:
     raise KernelError("COMMAND_FAILED", str(error))
 
 
-def unwrap_or(result: "Result[T, E]", fallback: T) -> T:
+def unwrap_or(result: Result[T, E], fallback: T) -> T:
     """Unwrap a success, or fall back. Never raises."""
     return result.value if result.ok else fallback  # type: ignore[union-attr]
 
 
-def map_ok(result: "Result[T, E]", fn: Callable[[T], U]) -> "Result[U, E]":
+def map_ok(result: Result[T, E], fn: Callable[[T], U]) -> Result[U, E]:
     return Ok(fn(result.value)) if result.ok else result  # type: ignore[union-attr,return-value]
 
 
-def map_err(result: "Result[T, E]", fn: Callable[[E], F]) -> "Result[T, F]":
+def map_err(result: Result[T, E], fn: Callable[[E], F]) -> Result[T, F]:
     return result if result.ok else Err(fn(result.error))  # type: ignore[union-attr,return-value]
 
 
@@ -90,7 +91,7 @@ def attempt(
     fn: Callable[[], T],
     code: KernelErrorCode,
     message: str,
-) -> "Result[T, KernelError]":
+) -> Result[T, KernelError]:
     """Run a synchronous function, converting any raise into an ``Err[KernelError]``."""
     try:
         return Ok(fn())
@@ -102,7 +103,7 @@ async def attempt_async(
     fn: Callable[[], Any],
     code: KernelErrorCode,
     message: str,
-) -> "Result[Any, KernelError]":
+) -> Result[Any, KernelError]:
     """Run a possibly-async function, converting a synchronous raise *or* a failed await into an
     ``Err[KernelError]``.
 

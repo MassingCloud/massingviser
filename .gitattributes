@@ -1,0 +1,10 @@
+# Normalise to LF in the repository and on checkout. Without this, a Windows clone rewrites every
+# file to CRLF, and the next commit from a Linux machine shows all 137 files as changed.
+* text=auto eol=lf
+
+# Fixtures and archives are bytes. IFC is text, but line-ending translation would change a file
+# whose checksum an ICDD container may be asserting.
+*.ifc  -text
+*.zip  binary
+*.png  binary
+*.whl  binary

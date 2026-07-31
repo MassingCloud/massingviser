@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Sequence
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import Id, ModelRecord, ProjectRecord, SessionStateRecord
@@ -57,9 +58,7 @@ class FederationServiceImpl:
         if not self._stores.projects.has(project.id):
             self._stores.projects.add(project)
         self._active = project.id
-        self._runtime.context.events.emit(
-            FEDERATION_EVENTS.project_opened, {"project": project}
-        )
+        self._runtime.context.events.emit(FEDERATION_EVENTS.project_opened, {"project": project})
         return ok(None)
 
     async def close_project(self) -> Result[None, KernelError]:
@@ -69,9 +68,7 @@ class FederationServiceImpl:
         for model_id in list(self._states):
             await self.unload(model_id)
         self._active = None
-        self._runtime.context.events.emit(
-            FEDERATION_EVENTS.project_closed, {"project": project}
-        )
+        self._runtime.context.events.emit(FEDERATION_EVENTS.project_closed, {"project": project})
         return ok(None)
 
     # -- models -------------------------------------------------------------------------------
@@ -99,9 +96,7 @@ class FederationServiceImpl:
 
         project = self.current_project()
         if project is not None and record.id not in project.model_ids:
-            self._stores.projects.update(
-                project.id, {"model_ids": (*project.model_ids, record.id)}
-            )
+            self._stores.projects.update(project.id, {"model_ids": (*project.model_ids, record.id)})
         self._runtime.context.events.emit(FEDERATION_EVENTS.model_added, {"record": record})
         return ok(None)
 
@@ -118,9 +113,7 @@ class FederationServiceImpl:
                 project.id,
                 {"model_ids": tuple(m for m in project.model_ids if m != model_id)},
             )
-        self._runtime.context.events.emit(
-            FEDERATION_EVENTS.model_removed, {"modelId": model_id}
-        )
+        self._runtime.context.events.emit(FEDERATION_EVENTS.model_removed, {"modelId": model_id})
         return ok(None)
 
     def models(self) -> tuple[ModelRecord, ...]:
@@ -132,9 +125,7 @@ class FederationServiceImpl:
         current = self._states.get(model_id) or ModelLoadState(model_id=model_id)
         updated = replace(current, **changes)
         self._states[model_id] = updated
-        self._runtime.context.events.emit(
-            FEDERATION_EVENTS.model_state_changed, {"state": updated}
-        )
+        self._runtime.context.events.emit(FEDERATION_EVENTS.model_state_changed, {"state": updated})
         return updated
 
     async def load(self, model_id: Id) -> Result[None, KernelError]:
@@ -290,19 +281,14 @@ class SessionStateServiceImpl:
             saved_at=self._runtime.clock.iso(),
             saved_by=self._runtime.context.permissions.identity.id,
             loaded_model_ids=tuple(
-                state.model_id
-                for state in self._federation.states()
-                if state.phase == "loaded"
+                state.model_id for state in self._federation.states() if state.phase == "loaded"
             ),
             open_panels=tuple(
-                contribution.id
-                for contribution in self._runtime.context.commands.list()[:0]
+                contribution.id for contribution in self._runtime.context.commands.list()[:0]
             ),
         )
         self._stores.sessions.add(record)
-        self._runtime.context.events.emit(
-            FEDERATION_EVENTS.session_captured, {"record": record}
-        )
+        self._runtime.context.events.emit(FEDERATION_EVENTS.session_captured, {"record": record})
         return ok(record)
 
     async def restore(self, state: SessionStateRecord) -> Result[None, KernelError]:

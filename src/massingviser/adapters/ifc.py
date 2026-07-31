@@ -15,8 +15,9 @@ as before, minus the ability to open an IFC file.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 import ifcopenshell
 import ifcopenshell.geom
@@ -265,9 +266,7 @@ class IfcImportAdapter:
         try:
             model = open_ifc(payload, model_id=model_id)
         except Exception as thrown:  # noqa: BLE001 -- third-party parser on untrusted input
-            return err(
-                KernelError("COMMAND_FAILED", f"IFC could not be read: {thrown}", {})
-            )
+            return err(KernelError("COMMAND_FAILED", f"IFC could not be read: {thrown}", {}))
 
         self._models[model_id] = model
         without_geometry = tuple(
@@ -278,7 +277,7 @@ class IfcImportAdapter:
         warnings = []
         if model.source_units != "m":
             warnings.append(
-                f'authored in {model.source_units}; every coordinate has been converted to metres'
+                f"authored in {model.source_units}; every coordinate has been converted to metres"
             )
         return ok(
             ImportSummary(

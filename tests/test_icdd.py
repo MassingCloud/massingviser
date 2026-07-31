@@ -38,7 +38,6 @@ from massingviser.plugins.icdd import (
     write_container,
 )
 
-
 # ---------------------------------------------------------------------------------------------
 # Vocabulary
 # ---------------------------------------------------------------------------------------------
@@ -282,9 +281,17 @@ def test_a_symmetric_link_serialises_with_plain_link_elements():
 @pytest.mark.parametrize(
     ("identifier", "predicate", "class_iri"),
     [
-        (Identifier("string", "2O2Fr$t4X7Zf8NOew3FLOH", field="GlobalId"), LS.identifier, LS.StringBasedIdentifier),
+        (
+            Identifier("string", "2O2Fr$t4X7Zf8NOew3FLOH", field="GlobalId"),
+            LS.identifier,
+            LS.StringBasedIdentifier,
+        ),
         (Identifier("uri", "https://example.invalid/#w1"), LS.uri, LS.URIBasedIdentifier),
-        (Identifier("query", "SELECT ?s WHERE {}", query_language="SPARQL"), LS.queryExpression, LS.QueryBasedIdentifier),
+        (
+            Identifier("query", "SELECT ?s WHERE {}", query_language="SPARQL"),
+            LS.queryExpression,
+            LS.QueryBasedIdentifier,
+        ),
     ],
 )
 def test_element_level_addressing_uses_the_right_identifier_class(identifier, predicate, class_iri):
@@ -405,9 +412,7 @@ def test_an_undeclared_file_in_the_archive_is_warned_about():
 
 
 def test_an_internal_document_with_no_filename_is_an_error():
-    container = _container(
-        documents=(Document(id="model", name="Bridge"),), linksets=()
-    )
+    container = _container(documents=(Document(id="model", name="Bridge"),), linksets=())
     report = validate_container(MemoryArchive(), container)
     assert not report.ok
     assert any("no filename" in issue.message for issue in report.errors)
@@ -415,9 +420,7 @@ def test_an_internal_document_with_no_filename_is_an_error():
 
 def test_a_prior_version_outside_the_container_is_an_error():
     container = _container(
-        documents=(
-            Document(id="model", name="Bridge", filename="b.ifc", prior_version="ghost"),
-        ),
+        documents=(Document(id="model", name="Bridge", filename="b.ifc", prior_version="ghost"),),
         linksets=(),
     )
     report = validate_container(_archive_with_payloads(container), container)

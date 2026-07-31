@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any
 
 #: Truncation length of the hex digest. 128 bits.
 ID_LENGTH = 32
@@ -63,7 +64,9 @@ def canonical_json(value: Any) -> str:
     Determinism is the whole contract. Two processes on two machines must produce byte-identical
     text for equal content, or the id stops being an identity and becomes a coincidence.
     """
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=_encode)
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=_encode
+    )
 
 
 def _encode(value: Any) -> Any:
@@ -190,7 +193,9 @@ class Serialiser:
             references: list[dict[str, Any]] = []
             for start in range(0, len(child), self._chunk_size):
                 window = list(child[start : start + self._chunk_size])
-                payload, inner = self._walk({"speckle_type": "DataChunk", "data": window}, depth=depth + 1)
+                payload, inner = self._walk(
+                    {"speckle_type": "DataChunk", "data": window}, depth=depth + 1
+                )
                 record = self._emit(payload, inner)
                 self._merge(closure, {record.id: 1})
                 self._merge(closure, {k: v + 1 for k, v in record.closure.items()})
@@ -213,7 +218,9 @@ class Serialiser:
         return Reference(record.id).to_dict()
 
 
-def serialise(value: Any, *, chunk_size: int = DEFAULT_CHUNK_SIZE) -> tuple[SerialisedObject, dict[str, SerialisedObject]]:
+def serialise(
+    value: Any, *, chunk_size: int = DEFAULT_CHUNK_SIZE
+) -> tuple[SerialisedObject, dict[str, SerialisedObject]]:
     """Decompose a value. Returns the root object and every object produced, keyed by id."""
     serialiser = Serialiser(chunk_size=chunk_size)
     root = serialiser.serialise(value)

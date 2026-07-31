@@ -18,7 +18,7 @@ unrecognised type decodes to a plain dict.
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 
 RECORD_TAG = "$record"
 

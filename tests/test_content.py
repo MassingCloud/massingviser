@@ -13,7 +13,6 @@ import pytest
 
 from massingviser.kernel import KERNEL_API_VERSION, err, ok
 from massingviser.plugins.authoring import (
-    AUTHORING_COMMANDS,
     AuthoringSessionToken,
     ConstraintRecord,
     EditCommandToken,
@@ -21,7 +20,6 @@ from massingviser.plugins.authoring import (
     EditOperation,
     GeometryBackendToken,
     Level,
-    LevelSourceToken,
     PublishToken,
     SketchPlane,
     authoring_plugin,
@@ -29,7 +27,6 @@ from massingviser.plugins.authoring import (
 )
 from massingviser.plugins.families import (
     FamilyLibraryRegistryToken,
-    FamilyParameterToken,
     FamilyPlacementToken,
     FamilyRepositoryAdapterToken,
     FamilyResolverToken,
@@ -67,7 +64,6 @@ from massingviser.schema import (
     TwinObjectRecord,
 )
 
-
 # ---------------------------------------------------------------------------------------------
 # Family libraries
 # ---------------------------------------------------------------------------------------------
@@ -83,8 +79,12 @@ def _package(slug: str, version: str, **overrides) -> FamilyPackageRecord:
         api_version=f"^{KERNEL_API_VERSION}",
         license="MIT",
         parameters=(
-            FamilyParameterDefinition("width", "length", unit="m", default_value=1.0, min=0.1, max=5.0),
-            FamilyParameterDefinition("finish", "enum", options=("oak", "steel"), default_value="oak"),
+            FamilyParameterDefinition(
+                "width", "length", unit="m", default_value=1.0, min=0.1, max=5.0
+            ),
+            FamilyParameterDefinition(
+                "finish", "enum", options=("oak", "steel"), default_value="oak"
+            ),
         ),
         assets=(),
     )
@@ -134,7 +134,7 @@ async def _catalogue(harness, versions):
 
 
 async def test_resolution_orders_versions_numerically_not_lexically(harness):
-    """"0.10.0" sorts below "0.9.0" as a string, which resolves a range to the wrong build."""
+    """ "0.10.0" sorts below "0.9.0" as a string, which resolves a range to the wrong build."""
     resolver = await _catalogue(harness, ("0.9.0", "0.10.0"))
     assert (await resolver.resolve("studio/door", ">=0.9.0")).value.version == "0.10.0"
 
@@ -203,9 +203,7 @@ async def _library(harness):
 async def test_placement_applies_defaults_and_captures_the_slug(harness):
     registry, _ = await _library(harness)
     placement = harness.capability(FamilyPlacementToken)
-    instance = (
-        await placement.place("studio/door@1.0.0", "1.0.0", PlacementOptions())
-    ).value
+    instance = (await placement.place("studio/door@1.0.0", "1.0.0", PlacementOptions())).value
     assert instance.parameters == {"width": 1.0, "finish": "oak"}
     # Package ids are catalogue-local and do not survive a re-sync; the slug is what does.
     assert instance.package_slug == "studio/door"
@@ -239,8 +237,12 @@ async def test_upgrading_leaves_incompatible_instances_alone_and_names_them(harn
                 "studio/door",
                 "2.0.0",
                 parameters=(
-                    FamilyParameterDefinition("width", "length", default_value=1.0, min=0.1, max=1.5),
-                    FamilyParameterDefinition("finish", "enum", options=("oak", "steel"), default_value="oak"),
+                    FamilyParameterDefinition(
+                        "width", "length", default_value=1.0, min=0.1, max=1.5
+                    ),
+                    FamilyParameterDefinition(
+                        "finish", "enum", options=("oak", "steel"), default_value="oak"
+                    ),
                 ),
             ),
         ]
@@ -252,10 +254,14 @@ async def test_upgrading_leaves_incompatible_instances_alone_and_names_them(harn
 
     placement = harness.capability(FamilyPlacementToken)
     narrow = (
-        await placement.place("studio/door@1.0.0", "1.0.0", PlacementOptions(parameters={"width": 1.0}))
+        await placement.place(
+            "studio/door@1.0.0", "1.0.0", PlacementOptions(parameters={"width": 1.0})
+        )
     ).value
     wide = (
-        await placement.place("studio/door@1.0.0", "1.0.0", PlacementOptions(parameters={"width": 4.0}))
+        await placement.place(
+            "studio/door@1.0.0", "1.0.0", PlacementOptions(parameters={"width": 4.0})
+        )
     ).value
 
     summary = (
@@ -283,7 +289,9 @@ async def test_removing_a_repository_keeps_the_instances_placed_from_it(harness)
 
 
 def test_a_planar_fit_recovers_a_known_rotation_exactly():
-    fit = fit_planar([(0, 0, 0), (10, 0, 0), (10, 10, 0)], [(100, 50, 0), (100, 60, 0), (90, 60, 0)])
+    fit = fit_planar(
+        [(0, 0, 0), (10, 0, 0), (10, 10, 0)], [(100, 50, 0), (100, 60, 0), (90, 60, 0)]
+    )
     assert fit is not None
     assert math.degrees(fit.rotation) == pytest.approx(90.0)
     assert fit.scale == pytest.approx(1.0)
@@ -355,9 +363,7 @@ async def test_a_hand_placed_transform_records_no_confidence(harness):
     """So a later reader can tell "somebody dragged it" from "it was registered against control"."""
     await harness.load(twin_plugin)
     await harness.capability(TwinRegistryToken).register(_scan())
-    record = (
-        await harness.capability(TwinAlignmentToken).set_transform("scan-1", (1,) * 16)
-    ).value
+    record = (await harness.capability(TwinAlignmentToken).set_transform("scan-1", (1,) * 16)).value
     assert record.rms_error is None
     assert harness.capability(TwinRegistryToken).get("scan-1").alignment_confidence is None
 
@@ -654,7 +660,7 @@ async def test_undo_and_redo_go_through_the_backend(harness):
 
 
 async def test_coalescing_makes_a_drag_undo_once(harness):
-    backend = await _authoring(harness)
+    await _authoring(harness)
     await harness.capability(AuthoringSessionToken).open("m1")
     edits = harness.capability(EditCommandToken)
     history = harness.capability(EditHistoryToken)
@@ -663,9 +669,7 @@ async def test_coalescing_makes_a_drag_undo_once(harness):
         await edits.apply([EditOperation(kind="move", element=ElementRef("m1", "W1"))])
     assert len(history.entries()) == 4
 
-    merged = (
-        await history.coalesce("drag wall", [entry.id for entry in history.entries()])
-    ).value
+    merged = (await history.coalesce("drag wall", [entry.id for entry in history.entries()])).value
     assert len(history.entries()) == 1 and len(merged.operations) == 4
 
 

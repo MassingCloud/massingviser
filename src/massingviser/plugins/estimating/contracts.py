@@ -7,15 +7,15 @@ a number nobody can trace when the model is re-issued and half the bill silently
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (
     BoqLineRecord,
     BoqRecord,
     CashflowForecastRecord,
-    ChangeImpactRecord,
     ClassificationMappingRecord,
     ClassificationSystemRecord,
     CostAssemblyRecord,
@@ -117,7 +117,9 @@ class ClassificationMappingService(Protocol):
         self, name: str, version: str | None = None
     ) -> Result[ClassificationSystemRecord, KernelError]: ...
     def mappings(self, system_id: Id | None = None) -> tuple[ClassificationMappingRecord, ...]: ...
-    async def set_mapping(self, **mapping: Any) -> Result[ClassificationMappingRecord, KernelError]: ...
+    async def set_mapping(
+        self, **mapping: Any
+    ) -> Result[ClassificationMappingRecord, KernelError]: ...
     async def classify(
         self, system_id: Id, quantity_ids: Sequence[Id] | None = None
     ) -> Result[Mapping[str, Any], KernelError]: ...

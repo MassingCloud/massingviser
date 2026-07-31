@@ -15,10 +15,10 @@ massing tool. Footprints have tens of vertices; O(n^2) is free at that size.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 
-from .geometry import EPSILON, is_clockwise, normalise_winding, polygon_area, signed_area
+from .geometry import EPSILON, is_clockwise, normalise_winding, polygon_area
 
 Point2 = "tuple[float, float]"
 Point3 = "tuple[float, float, float]"
@@ -38,11 +38,12 @@ class Mesh:
     def is_empty(self) -> bool:
         return not self.faces
 
-    def merged_with(self, other: "Mesh") -> "Mesh":
+    def merged_with(self, other: Mesh) -> Mesh:
         offset = len(self.vertices)
         return Mesh(
             vertices=self.vertices + other.vertices,
-            faces=self.faces + tuple((a + offset, b + offset, c + offset) for a, b, c in other.faces),
+            faces=self.faces
+            + tuple((a + offset, b + offset, c + offset) for a, b, c in other.faces),
         )
 
 
@@ -64,9 +65,7 @@ def merge(meshes: Sequence[Mesh]) -> Mesh:
 # ---------------------------------------------------------------------------------------------
 
 
-def _cross(
-    o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
-) -> float:
+def _cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
     return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
 
@@ -223,13 +222,7 @@ def _bridge_one_hole(
             p_index = i
 
     rotated = hole_ring[m_index:] + hole_ring[:m_index]
-    return (
-        ring[: p_index + 1]
-        + rotated
-        + [rotated[0]]
-        + [ring[p_index]]
-        + ring[p_index + 1 :]
-    )
+    return ring[: p_index + 1] + rotated + [rotated[0]] + [ring[p_index]] + ring[p_index + 1 :]
 
 
 def triangulate(
@@ -253,9 +246,7 @@ def triangulate(
 # ---------------------------------------------------------------------------------------------
 
 
-def _wall_strip(
-    ring: Sequence[tuple[float, float]], z0: float, z1: float, flip: bool
-) -> Mesh:
+def _wall_strip(ring: Sequence[tuple[float, float]], z0: float, z1: float, flip: bool) -> Mesh:
     """A closed band of quads between two elevations.
 
     ``flip`` reverses the winding, which is how hole walls end up facing inwards -- a courtyard

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, Awaitable, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from ..kernel import Kernel, KernelError, Result, err
 
@@ -34,9 +35,7 @@ class KernelBridge:
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
         self._closed = False
-        self._thread = threading.Thread(
-            target=self._run, name="massingviser-kernel", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="massingviser-kernel", daemon=True)
         self._thread.start()
         self._ready.wait(timeout=5.0)
 
@@ -117,7 +116,7 @@ class KernelBridge:
         self._thread.join(timeout=5.0)
         self._kernel.dispose()
 
-    def __enter__(self) -> "KernelBridge":
+    def __enter__(self) -> KernelBridge:
         return self
 
     def __exit__(self, *_exc: object) -> None:

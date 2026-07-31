@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Sequence
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import ElementRef, Id, element_key
@@ -67,9 +68,7 @@ def resolve_sketch_plane(plane: SketchPlane, levels: Sequence[Any]) -> SketchPla
     level = next((candidate for candidate in levels if candidate.id == plane.level_id), None)
     if level is None:
         return plane
-    return replace(
-        plane, origin=(plane.origin[0], plane.origin[1], level.elevation + plane.offset)
-    )
+    return replace(plane, origin=(plane.origin[0], plane.origin[1], level.elevation + plane.offset))
 
 
 class AuthoringSessionServiceImpl:
@@ -120,9 +119,7 @@ class AuthoringSessionServiceImpl:
         )
         self._stores.sessions.add(session)
         self._active = session.id
-        self._runtime.context.events.emit(
-            AUTHORING_EVENTS.session_opened, {"session": session}
-        )
+        self._runtime.context.events.emit(AUTHORING_EVENTS.session_opened, {"session": session})
         return ok(session)
 
     async def discard(self, session_id: Id) -> Result[None, KernelError]:
@@ -146,9 +143,7 @@ class AuthoringSessionServiceImpl:
                 return err(reverted.error)
             self._stores.history.update(entry.id, {"reverted": True})
 
-        self._stores.sessions.update(
-            session_id, {"closed_at": self._runtime.clock.iso()}
-        )
+        self._stores.sessions.update(session_id, {"closed_at": self._runtime.clock.iso()})
         if self._active == session_id:
             self._active = None
         self._runtime.context.events.emit(
@@ -170,9 +165,7 @@ class AuthoringSessionServiceImpl:
                     {"sessionId": session_id},
                 )
             )
-        updated = self._stores.sessions.update(
-            session_id, {"closed_at": self._runtime.clock.iso()}
-        )
+        updated = self._stores.sessions.update(session_id, {"closed_at": self._runtime.clock.iso()})
         if self._active == session_id:
             self._active = None
         return ok(updated) if updated else err(_not_found("session", session_id))
@@ -206,7 +199,9 @@ class EditCommandServiceImpl:
 
     def can_apply(self, operations: Sequence[EditOperation]) -> Result[None, KernelError]:
         if not operations:
-            return err(KernelError("COMMAND_FAILED", "An edit with no operations does nothing.", {}))
+            return err(
+                KernelError("COMMAND_FAILED", "An edit with no operations does nothing.", {})
+            )
         if self._sessions.current() is None:
             return err(
                 KernelError(
@@ -353,7 +348,7 @@ class EditHistoryServiceImpl:
     ) -> Result[EditHistoryEntry, KernelError]:
         wanted = [self._stores.history.get(entry_id) for entry_id in entry_ids]
         missing = [
-            entry_id for entry_id, entry in zip(entry_ids, wanted) if entry is None
+            entry_id for entry_id, entry in zip(entry_ids, wanted, strict=True) if entry is None
         ]
         if missing:
             return err(_not_found("edit", missing[0]))

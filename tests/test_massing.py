@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from massingviser.plugins.massing import (
@@ -88,9 +86,7 @@ def test_metrics_are_computed_per_story_so_setbacks_are_honoured():
 
 
 def test_excluded_stories_leave_gfa_but_stay_in_the_volume():
-    result = compute_mass_metrics(
-        outer=SQUARE, story_heights=[3.0, 3.0, 3.0], excluded_stories=[2]
-    )
+    result = compute_mass_metrics(outer=SQUARE, story_heights=[3.0, 3.0, 3.0], excluded_stories=[2])
     assert result.gross_floor_area == pytest.approx(1200.0)  # plant level excluded
     assert result.volume == pytest.approx(5400.0)  # but it is still a volume
 
@@ -173,7 +169,10 @@ async def test_a_self_intersecting_sketch_is_refused_by_the_command(harness):
 async def test_story_edits_preserve_per_story_annotations(harness):
     await harness.load(massing_plugin)
     profile = (
-        await harness.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]})
+        await harness.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]},
+        )
     ).value
     mass = (
         await harness.execute(
@@ -192,7 +191,10 @@ async def test_story_edits_preserve_per_story_annotations(harness):
 async def test_deleting_a_mass_and_undoing_restores_it_exactly(harness):
     await harness.load(massing_plugin)
     profile = (
-        await harness.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]})
+        await harness.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]},
+        )
     ).value
     mass = (
         await harness.execute(
@@ -216,7 +218,10 @@ async def test_deleting_a_mass_and_undoing_restores_it_exactly(harness):
 async def test_a_locked_mass_refuses_edits(harness):
     await harness.load(massing_plugin)
     profile = (
-        await harness.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]})
+        await harness.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]},
+        )
     ).value
     masses = harness.capability(MassingToken)
     mass = (
@@ -233,7 +238,10 @@ async def test_a_locked_mass_refuses_edits(harness):
 async def test_plot_ratio_appears_once_a_site_is_set(harness):
     await harness.load(massing_plugin)
     profile = (
-        await harness.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0), (20, 0, 0), (20, 20, 0), (0, 20, 0)]})
+        await harness.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 20, 0), (0, 20, 0)]},
+        )
     ).value
     mass = (
         await harness.execute(
@@ -255,7 +263,10 @@ async def test_plot_ratio_appears_once_a_site_is_set(harness):
 async def test_promotion_without_a_handler_says_so_instead_of_pretending(harness):
     await harness.load(massing_plugin)
     profile = (
-        await harness.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]})
+        await harness.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)]},
+        )
     ).value
     mass = (
         await harness.execute(

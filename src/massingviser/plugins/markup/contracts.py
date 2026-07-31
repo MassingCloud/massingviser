@@ -8,9 +8,10 @@ is what "all the pins moved" looks like from the outside.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (

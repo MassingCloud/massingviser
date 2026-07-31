@@ -15,30 +15,26 @@ whole point of the architecture underneath.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 import viser
 
 from ..kernel import Kernel, KernelError, Result, UIContribution
 from ..plugins.estimating import (
     ESTIMATING_COMMANDS,
-    BoqToken,
     EstimateToken,
-    QuantityTakeoffToken,
 )
-from ..plugins.markup import MARKUP_COMMANDS, IssueToken, MarkupToken
+from ..plugins.markup import MARKUP_COMMANDS, IssueToken
 from ..plugins.massing import (
     MASSING_COMMANDS,
-    ContextToken,
     MassingToken,
     MetricsToken,
-    OptionToken,
     ProfileToken,
-    StoryToken,
 )
 from .bridge import KernelBridge
-from .scene import DEFAULT_COLOR, SceneSync, hex_to_rgb
+from .scene import DEFAULT_COLOR, SceneSync
 
 PanelRenderer = Callable[["MassingViserApp", Any], None]
 
@@ -58,7 +54,7 @@ class MassingViserApp:
 
     # -- lifecycle ---------------------------------------------------------------------------
 
-    def build(self) -> "MassingViserApp":
+    def build(self) -> MassingViserApp:
         self.server.gui.configure_theme(
             titlebar_content=None, control_layout="collapsible", dark_mode=True
         )
@@ -69,9 +65,7 @@ class MassingViserApp:
         )
         self.server.scene.set_up_direction("+z")
 
-        self._scene = SceneSync(
-            server=self.server, bridge=self.bridge, on_select=self._select_mass
-        )
+        self._scene = SceneSync(server=self.server, bridge=self.bridge, on_select=self._select_mass)
 
         self._build_header()
         self._build_panels()
@@ -197,9 +191,7 @@ class MassingViserApp:
         if not mine:
             self.server.gui.add_markdown(f"_{contribution.title} contributed no commands._")
             return
-        self.server.gui.add_markdown(
-            f"_Generic surface for `{plugin_id}`. {len(mine)} commands._"
-        )
+        self.server.gui.add_markdown(f"_Generic surface for `{plugin_id}`. {len(mine)} commands._")
         for command in mine[:12]:
             self.server.gui.add_markdown(f"- `{command.id}` -- {command.title or ''}")
 
@@ -273,9 +265,7 @@ class MassingViserApp:
         gui.add_markdown("---")
 
         selection = gui.add_dropdown("Selected", ("(none)",), initial_value="(none)")
-        edit_storeys = gui.add_slider(
-            "Storeys (selected)", min=1, max=60, step=1, initial_value=12
-        )
+        edit_storeys = gui.add_slider("Storeys (selected)", min=1, max=60, step=1, initial_value=12)
         edit_opacity = gui.add_slider("Opacity", min=0.1, max=1.0, step=0.05, initial_value=1.0)
         duplicate = gui.add_button("Duplicate", icon=viser.Icon.COPY)
         delete = gui.add_button("Delete", icon=viser.Icon.TRASH, color="red")
@@ -286,9 +276,7 @@ class MassingViserApp:
         syncing = {"value": False}
 
         def options() -> list[str]:
-            service = self.bridge.read(
-                lambda: self.bridge.kernel.capabilities.get(MassingToken)
-            )
+            service = self.bridge.read(lambda: self.bridge.kernel.capabilities.get(MassingToken))
             if service is None:
                 return []
             return [mass.id for mass in self.bridge.read(service.list)]
@@ -364,9 +352,7 @@ class MassingViserApp:
             if self._selected_mass is None:
                 return
             self._report(
-                self.bridge.execute(
-                    MASSING_COMMANDS.remove_mass, {"id": self._selected_mass}
-                ),
+                self.bridge.execute(MASSING_COMMANDS.remove_mass, {"id": self._selected_mass}),
                 "Deleted -- Undo restores it exactly.",
             )
             self._selected_mass = None
@@ -435,9 +421,7 @@ class MassingViserApp:
         listing = gui.add_markdown("_No issues._")
 
         def redraw() -> None:
-            service = self.bridge.read(
-                lambda: self.bridge.kernel.capabilities.get(IssueToken)
-            )
+            service = self.bridge.read(lambda: self.bridge.kernel.capabilities.get(IssueToken))
             if service is None:
                 listing.content = "_Markup capability not installed._"
                 return
@@ -501,9 +485,7 @@ class MassingViserApp:
         output = gui.add_markdown("_Not priced yet._")
 
         def redraw() -> None:
-            service = self.bridge.read(
-                lambda: self.bridge.kernel.capabilities.get(EstimateToken)
-            )
+            service = self.bridge.read(lambda: self.bridge.kernel.capabilities.get(EstimateToken))
             if service is None:
                 return
             estimates = self.bridge.read(service.list)

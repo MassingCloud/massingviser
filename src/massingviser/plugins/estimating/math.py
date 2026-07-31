@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import math as _math
 import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from ...kernel import KernelError, Result, err, ok
 from ...schema import Money
@@ -212,8 +213,7 @@ def _to_rpn(tokens: Sequence[_Token]) -> Result[list[_Token], KernelError]:
             operator = token.value
             # Unary sign: at the start, or straight after another operator or an opening paren.
             if operator in ("-", "+") and (
-                previous is None
-                or (previous.kind == "op" and previous.value not in (")",))
+                previous is None or (previous.kind == "op" and previous.value not in (")",))
             ):
                 operator = _UNARY_MINUS if operator == "-" else _UNARY_PLUS
             precedence = 4 if operator in (_UNARY_MINUS, _UNARY_PLUS) else _PRECEDENCE.get(operator)
@@ -341,13 +341,9 @@ def evaluate_expression(
             try:
                 stack.append(float(left**right))
             except (OverflowError, ValueError) as thrown:
-                return err(
-                    KernelError("COMMAND_FAILED", f"Expression overflowed: {thrown}", {})
-                )
+                return err(KernelError("COMMAND_FAILED", f"Expression overflowed: {thrown}", {}))
         else:
-            return err(
-                KernelError("COMMAND_FAILED", f"Unknown operator {operator!r}.", {})
-            )
+            return err(KernelError("COMMAND_FAILED", f"Unknown operator {operator!r}.", {}))
 
     if len(stack) != 1:
         return err(

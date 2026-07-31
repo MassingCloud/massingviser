@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
-from ...kernel import KERNEL_API_VERSION, KernelError, PluginContext, Result, err, ok
-from ...kernel import parse_semver, satisfies
+from ...kernel import (
+    KERNEL_API_VERSION,
+    KernelError,
+    PluginContext,
+    Result,
+    err,
+    ok,
+    parse_semver,
+    satisfies,
+)
 from ...schema import (
     FamilyInstanceRecord,
     FamilyPackageRecord,
@@ -141,14 +150,16 @@ class FamilyLibraryRegistryServiceImpl:
         text = (query.text or "").lower()
         return self._stores.packages.query(
             lambda p: (
-                not text
-                or text in p.name.lower()
-                or text in p.slug.lower()
-                or text in (p.description or "").lower()
+                (
+                    not text
+                    or text in p.name.lower()
+                    or text in p.slug.lower()
+                    or text in (p.description or "").lower()
+                )
+                and (query.category is None or p.category == query.category)
+                and (not query.tags or set(query.tags).issubset(set(p.tags)))
+                and (query.repository_id is None or p.repository_id == query.repository_id)
             )
-            and (query.category is None or p.category == query.category)
-            and (not query.tags or set(query.tags).issubset(set(p.tags)))
-            and (query.repository_id is None or p.repository_id == query.repository_id)
         )
 
 
@@ -269,9 +280,7 @@ class FamilyParameterServiceImpl:
         instance = self._stores.instances.get(instance_id)
         return dict(instance.parameters) if instance else {}
 
-    def validate(
-        self, package_id: Id, parameters: Mapping[str, Any]
-    ) -> Result[None, KernelError]:
+    def validate(self, package_id: Id, parameters: Mapping[str, Any]) -> Result[None, KernelError]:
         package = self._stores.packages.get(package_id)
         if package is None:
             return err(_not_found("package", package_id))
@@ -304,9 +313,7 @@ class FamilyParameterServiceImpl:
             elif definition.type == "string" and not isinstance(value, str):
                 problems.append(f'"{name}" must be a string')
             elif definition.type == "enum" and value not in definition.options:
-                problems.append(
-                    f'"{name}" must be one of {", ".join(definition.options)}'
-                )
+                problems.append(f'"{name}" must be one of {", ".join(definition.options)}')
 
         if problems:
             return err(
@@ -436,7 +443,10 @@ class FamilyVersionServiceImpl:
     def available(self, slug: str) -> tuple[str, ...]:
         return tuple(
             sorted(
-                {package.version for package in self._stores.packages.query(lambda p: p.slug == slug)}
+                {
+                    package.version
+                    for package in self._stores.packages.query(lambda p: p.slug == slug)
+                }
             )
         )
 
@@ -480,7 +490,5 @@ class FamilyVersionServiceImpl:
             upgraded += 1
 
         summary = UpgradeSummary(upgraded=upgraded, incompatible=tuple(incompatible))
-        self._runtime.context.events.emit(
-            FAMILY_EVENTS.instances_upgraded, {"summary": summary}
-        )
+        self._runtime.context.events.emit(FAMILY_EVENTS.instances_upgraded, {"summary": summary})
         return ok(summary)

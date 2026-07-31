@@ -19,7 +19,9 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="seed a small scheme to look at")
     arguments = parser.parse_args()
 
-    kernel = build_kernel(plugins=tuple(p.strip() for p in arguments.plugins.split(",") if p.strip()))
+    kernel = build_kernel(
+        plugins=tuple(p.strip() for p in arguments.plugins.split(",") if p.strip())
+    )
 
     from .viewer import serve
 

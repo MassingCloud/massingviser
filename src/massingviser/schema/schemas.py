@@ -10,8 +10,9 @@ renaming them would fork the format for no gain.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Final, Mapping
+from typing import Final
 
 
 class SCHEMA:

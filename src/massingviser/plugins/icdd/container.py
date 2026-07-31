@@ -12,8 +12,9 @@ exposed so a host that wants the published SHACL shapes can run them itself.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from .ontology import (
     CONTAINER_LAYOUT,
@@ -21,11 +22,9 @@ from .ontology import (
     LINK_TYPES,
     LS,
     NS,
-    ONTOLOGY_IRI,
     LinkTypeDescriptor,
-    link_type_by_iri,
 )
-from .rdf import Graph, Iri, Literal as RdfLiteral, RdfError, parse, serialise
+from .rdf import Graph, Iri, RdfError, parse, serialise
 
 DocumentKind = Literal["internal", "external", "folder"]
 PartyKind = Literal["Person", "Organisation"]
@@ -199,9 +198,7 @@ def build_index_graph(container: Container) -> Graph:
     graph.add(subject, f"{NS.rdf}type", Iri(CT.ContainerDescription))
     graph.add_literal(subject, CT.name, container.description.name)
     graph.add_literal(subject, CT.description, container.description.description)
-    graph.add_literal(
-        subject, CT.conformanceIndicator, container.description.conformance_indicator
-    )
+    graph.add_literal(subject, CT.conformanceIndicator, container.description.conformance_indicator)
     graph.add_literal(subject, CT.creationDate, container.description.creation_date)
     graph.add_literal(subject, CT.versionID, container.description.version_id)
 
@@ -266,7 +263,16 @@ def build_linkset_graph(container_id: str, linkset: Linkset) -> Graph:
         link_subject = _subject(container_id, "link", link.id or f"{linkset.id}-{index}")
         graph.add(link_subject, f"{NS.rdf}type", Iri(descriptor.iri))
 
-        def emit(element: LinkElement, predicate: str, position: int) -> None:
+        def emit(
+            element: LinkElement,
+            predicate: str,
+            position: int,
+            *,
+            # Bound per iteration rather than captured. Every call happens inside this iteration,
+            # so the capture is harmless -- but if it ever escaped, every link element in the file
+            # would be minted under the last link's subject and the graph would be silently wrong.
+            link_subject: str = link_subject,
+        ) -> None:
             element_subject = f"{link_subject}:el{position}"
             graph.add(link_subject, predicate, Iri(element_subject))
             graph.add(element_subject, f"{NS.rdf}type", Iri(LS.LinkElement))
@@ -381,7 +387,9 @@ def validate_container(archive: ContainerArchive, container: Container) -> Valid
             if not document.filename:
                 issues.append(
                     ValidationIssue(
-                        "error", f'Internal document "{document.name}" has no filename.', document.id
+                        "error",
+                        f'Internal document "{document.name}" has no filename.',
+                        document.id,
                     )
                 )
                 continue
@@ -422,7 +430,9 @@ def validate_container(archive: ContainerArchive, container: Container) -> Valid
         payload = archive.read(path)
         if payload is None:
             issues.append(
-                ValidationIssue("error", f'Linkset "{path}" is declared but not present.', linkset.id)
+                ValidationIssue(
+                    "error", f'Linkset "{path}" is declared but not present.', linkset.id
+                )
             )
         else:
             try:
@@ -434,16 +444,12 @@ def validate_container(archive: ContainerArchive, container: Container) -> Valid
             label = link.id or f"{linkset.id}[{index}]"
             descriptor = link.descriptor
             if descriptor is None:
-                issues.append(
-                    ValidationIssue("error", f'Unknown link type "{link.type}".', label)
-                )
+                issues.append(ValidationIssue("error", f'Unknown link type "{link.type}".', label))
                 continue
 
             elements = (*link.from_elements, *link.to_elements)
             if len(elements) < 2:
-                issues.append(
-                    ValidationIssue("error", "A link needs at least two ends.", label)
-                )
+                issues.append(ValidationIssue("error", "A link needs at least two ends.", label))
             for element in elements:
                 if element.document_id not in known_documents:
                     issues.append(

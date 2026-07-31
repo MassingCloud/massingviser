@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Generic, Literal, TypeVar
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Generic, Literal, TypeVar
 
 from .disposable import Disposable, DisposableStore, to_disposable
 from .errors import KernelError
-from .result import Err, Ok, Result, err, ok
+from .result import Result, err, ok
 
 T = TypeVar("T")
 
@@ -62,9 +63,17 @@ class ServiceContainer:
     scopes resolve it.
     """
 
-    __slots__ = ("label", "_parent", "_registrations", "_instances", "_owned", "_resolving", "_disposed")
+    __slots__ = (
+        "label",
+        "_parent",
+        "_registrations",
+        "_instances",
+        "_owned",
+        "_resolving",
+        "_disposed",
+    )
 
-    def __init__(self, label: str = "root", parent: "ServiceContainer | None" = None) -> None:
+    def __init__(self, label: str = "root", parent: ServiceContainer | None = None) -> None:
         self.label = label
         self._parent = parent
         self._registrations: dict[ServiceToken[Any], _Registration] = {}
@@ -81,7 +90,7 @@ class ServiceContainer:
     def register(
         self,
         token: ServiceToken[T],
-        factory: Callable[["ServiceContainer"], T],
+        factory: Callable[[ServiceContainer], T],
         *,
         lifetime: ServiceLifetime = "singleton",
         dispose_on_release: bool = True,
@@ -142,7 +151,7 @@ class ServiceContainer:
                 )
             )
 
-    def create_scope(self, label: str) -> "ServiceContainer":
+    def create_scope(self, label: str) -> ServiceContainer:
         self._assert_live()
         scope = ServiceContainer(label, self)
         self._owned.add(scope)
@@ -160,7 +169,7 @@ class ServiceContainer:
 
     # -- internals ---------------------------------------------------------------------------
 
-    def _owner_of(self, token: ServiceToken[Any]) -> "ServiceContainer | None":
+    def _owner_of(self, token: ServiceToken[Any]) -> ServiceContainer | None:
         if token in self._registrations:
             return self
         return self._parent._owner_of(token) if self._parent else None
@@ -202,7 +211,11 @@ class ServiceContainer:
     def _release_instance(self, token: ServiceToken[Any]) -> None:
         registration = self._registrations.get(token)
         instance = self._instances.pop(token, None)
-        if registration is not None and registration.dispose_on_release and _is_disposable(instance):
+        if (
+            registration is not None
+            and registration.dispose_on_release
+            and _is_disposable(instance)
+        ):
             try:
                 instance.dispose()
             except Exception:  # noqa: BLE001
@@ -211,5 +224,7 @@ class ServiceContainer:
     def _assert_live(self) -> None:
         if self._disposed:
             raise KernelError(
-                "CONTAINER_DISPOSED", f'Container "{self.label}" is disposed.', {"scope": self.label}
+                "CONTAINER_DISPOSED",
+                f'Container "{self.label}" is disposed.',
+                {"scope": self.label},
             )

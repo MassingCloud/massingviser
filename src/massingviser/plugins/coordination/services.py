@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -28,7 +29,6 @@ from .contracts import (
     ModelSnapshotToken,
     RoutingRule,
     RoutingSummary,
-    SnapshotElement,
     ValidationRuleToken,
     ValidationRunSummary,
 )
@@ -47,7 +47,7 @@ def clash_signature(test_id: Id, a: ElementRef, b: ElementRef) -> str:
     left = element_key(a)
     right = element_key(b)
     first, second = (left, right) if left <= right else (right, left)
-    return hashlib.sha256(f"{test_id}|{first}|{second}".encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(f"{test_id}|{first}|{second}".encode()).hexdigest()[:32]
 
 
 @dataclass(frozen=True)
@@ -213,9 +213,7 @@ class ClashServiceImpl:
         )
         return ok(summary)
 
-    def results(
-        self, test_id: Id, *, status: ClashStatus | None = None
-    ) -> tuple[ClashRecord, ...]:
+    def results(self, test_id: Id, *, status: ClashStatus | None = None) -> tuple[ClashRecord, ...]:
         return self._stores.clashes.query(
             lambda clash: clash.test_id == test_id and (status is None or clash.status == status)
         )
@@ -359,9 +357,7 @@ class ValidationServiceImpl:
                     failed.append((rule.descriptor.id, str(thrown)))
                     continue
                 for finding in findings:
-                    severity: ValidationSeverity = (
-                        finding.severity or rule.descriptor.severity
-                    )
+                    severity: ValidationSeverity = finding.severity or rule.descriptor.severity
                     if severity == "error":
                         errors += 1
                     elif severity == "warning":
@@ -481,8 +477,10 @@ class IssueRoutingServiceImpl:
         return ok(record)
 
     async def remove_rule(self, rule_id: Id) -> Result[None, KernelError]:
-        return ok(None) if self._stores.routing.remove(rule_id) else err(
-            _not_found("routing rule", rule_id)
+        return (
+            ok(None)
+            if self._stores.routing.remove(rule_id)
+            else err(_not_found("routing rule", rule_id))
         )
 
     def rules(self) -> tuple[RoutingRule, ...]:
@@ -495,7 +493,9 @@ class IssueRoutingServiceImpl:
         if issues_service is None:
             return err(
                 KernelError(
-                    "CAPABILITY_NOT_FOUND", "No markup capability, so there are no issues to route.", {}
+                    "CAPABILITY_NOT_FOUND",
+                    "No markup capability, so there are no issues to route.",
+                    {},
                 )
             )
 
@@ -529,9 +529,7 @@ class IssueRoutingServiceImpl:
             routed += 1
 
         summary = RoutingSummary(routed=routed, unrouted=tuple(unrouted))
-        self._runtime.context.events.emit(
-            COORDINATION_EVENTS.issues_routed, {"summary": summary}
-        )
+        self._runtime.context.events.emit(COORDINATION_EVENTS.issues_routed, {"summary": summary})
         return ok(summary)
 
 
@@ -632,9 +630,7 @@ class RevisionDiffServiceImpl:
                     element=ElementRef(model_id=model_id, global_id=global_id),
                     kind="removed",
                     # Negative, so the 5D hand-off can add deltas without special-casing removal.
-                    quantity_delta={
-                        metric: -value for metric, value in element.quantities.items()
-                    },
+                    quantity_delta={metric: -value for metric, value in element.quantities.items()},
                 )
             )
 
@@ -647,9 +643,7 @@ class RevisionDiffServiceImpl:
             entries=tuple(entries),
         )
         self._stores.diffs.add(record)
-        self._runtime.context.events.emit(
-            COORDINATION_EVENTS.diff_computed, {"record": record}
-        )
+        self._runtime.context.events.emit(COORDINATION_EVENTS.diff_computed, {"record": record})
         return ok(record)
 
     async def compare_to_previous(self, model_id: Id) -> Result[RevisionDiffRecord, KernelError]:

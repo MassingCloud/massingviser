@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from .common import Id, IsoTimestamp, Provenance
 
-FamilyRepositoryKind = Literal[
-    "git", "local", "cloud-api", "enterprise-registry", "project-local"
-]
+FamilyRepositoryKind = Literal["git", "local", "cloud-api", "enterprise-registry", "project-local"]
 
 
 @dataclass(frozen=True)

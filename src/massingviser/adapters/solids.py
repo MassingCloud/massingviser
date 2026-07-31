@@ -15,8 +15,9 @@ in coordination changes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import trimesh
@@ -111,9 +112,7 @@ class SolidClashEngine:
             found.append(SolidClash(a=a, b=b, volume=volume, centre=centre))
         return tuple(sorted(found, key=lambda clash: -clash.volume))
 
-    def _intersect(
-        self, a: str, b: str
-    ) -> tuple[float | None, tuple[float, float, float]]:
+    def _intersect(self, a: str, b: str) -> tuple[float | None, tuple[float, float, float]]:
         left = self._mesh(a)
         right = self._mesh(b)
         if left is None or right is None:

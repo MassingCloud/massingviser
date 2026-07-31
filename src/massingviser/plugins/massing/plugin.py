@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from typing import Any
 
 from ...kernel import CommandDefinition, CommandInvocation, PluginContext, UIContribution
 from ...schema import Id, MassingObjectRecord, MassingStoryRecord
@@ -172,8 +173,9 @@ def create_massing_plugin(
             masses.restore(mass)
             for story in story_snapshot:
                 current = stores.stories.find(
-                    lambda candidate, s=story: candidate.massing_object_id == mass_id
-                    and candidate.index == s.index
+                    lambda candidate, s=story: (
+                        candidate.massing_object_id == mass_id and candidate.index == s.index
+                    )
                 )
                 if current is not None:
                     stores.stories.replace(replace(story, id=current.id))
@@ -306,8 +308,9 @@ def create_massing_plugin(
                 _unwrap(await stories.set_story_count(mass_id, len(heights)))
             for story in snapshot:
                 current = stores.stories.find(
-                    lambda candidate, s=story: candidate.massing_object_id == mass_id
-                    and candidate.index == s.index
+                    lambda candidate, s=story: (
+                        candidate.massing_object_id == mass_id and candidate.index == s.index
+                    )
                 )
                 if current is not None:
                     stores.stories.replace(replace(story, id=current.id))
@@ -462,9 +465,7 @@ def create_massing_plugin(
 
         async def promote(params: Mapping[str, Any], _ctx: Any) -> Any:
             return _unwrap(
-                await promotion.promote(
-                    params["id"], params["target"], **params.get("options", {})
-                )
+                await promotion.promote(params["id"], params["target"], **params.get("options", {}))
             )
 
         context.commands.register(

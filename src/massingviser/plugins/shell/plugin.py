@@ -10,9 +10,9 @@ Nothing in this module imports a rendering library.
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import (
     CapabilityToken,
@@ -20,14 +20,20 @@ from ...kernel import (
     KernelError,
     PluginContext,
     Result,
-    UIContribution,
     create_capability_token,
     err,
     ok,
 )
 from ...schema import Id, IsoTimestamp
-from ...sdk import Clock, IdFactory, RecordStore, SequentialIdFactory, SystemClock
-from ...sdk import create_record_store, define_plugin
+from ...sdk import (
+    Clock,
+    IdFactory,
+    RecordStore,
+    SequentialIdFactory,
+    SystemClock,
+    create_record_store,
+    define_plugin,
+)
 
 PLUGIN_ID = "massingviser.ui-shell"
 PLUGIN_VERSION = "0.1.0"
@@ -109,7 +115,9 @@ class ShellService(Protocol):
     # progress
     def begin(self, label: str, fraction: float | None = None) -> ProgressTask: ...
     def report(self, task_id: Id, fraction: float) -> Result[ProgressTask, KernelError]: ...
-    def finish(self, task_id: Id, *, cancelled: bool = False) -> Result[ProgressTask, KernelError]: ...
+    def finish(
+        self, task_id: Id, *, cancelled: bool = False
+    ) -> Result[ProgressTask, KernelError]: ...
     def running(self) -> tuple[ProgressTask, ...]: ...
 
     # palette and status bar
@@ -232,9 +240,7 @@ class ShellServiceImpl:
         )
 
     def notifications(self, *, include_dismissed: bool = False) -> tuple[Notification, ...]:
-        return self._notifications.query(
-            lambda note: include_dismissed or not note.dismissed
-        )
+        return self._notifications.query(lambda note: include_dismissed or not note.dismissed)
 
     # -- progress -----------------------------------------------------------------------------
 
@@ -335,7 +341,9 @@ def create_shell_plugin(*, clock: Clock | None = None, ids: IdFactory | None = N
             return result.value
 
         def notify(params: Mapping[str, Any], _ctx: Any) -> Any:
-            return service.notify(params["message"], **{k: v for k, v in params.items() if k != "message"})
+            return service.notify(
+                params["message"], **{k: v for k, v in params.items() if k != "message"}
+            )
 
         def dismiss(params: Mapping[str, Any], _ctx: Any) -> Any:
             result = service.dismiss(params["notification_id"])

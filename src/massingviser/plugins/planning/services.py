@@ -3,9 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import json
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -115,11 +116,15 @@ class ScheduleImportServiceImpl:
             try:
                 parsed = json.loads(text)
             except ValueError as thrown:
-                return err(KernelError("COMMAND_FAILED", f"Schedule is not valid JSON: {thrown}", {}))
+                return err(
+                    KernelError("COMMAND_FAILED", f"Schedule is not valid JSON: {thrown}", {})
+                )
             rows = parsed.get("tasks", parsed) if isinstance(parsed, dict) else parsed
             if not isinstance(rows, list):
                 return err(
-                    KernelError("COMMAND_FAILED", "Expected a list of tasks or {'tasks': [...]}.", {})
+                    KernelError(
+                        "COMMAND_FAILED", "Expected a list of tasks or {'tasks': [...]}.", {}
+                    )
                 )
             return ok(rows)
         if format == "csv":
@@ -137,7 +142,9 @@ class ScheduleImportServiceImpl:
                 )
             return ok(list(reader))
         return err(
-            KernelError("COMMAND_FAILED", f'Unsupported schedule format "{format}".', {"format": format})
+            KernelError(
+                "COMMAND_FAILED", f'Unsupported schedule format "{format}".', {"format": format}
+            )
         )
 
     def _to_task(self, row: Mapping[str, Any]) -> tuple[ScheduleTaskRecord | None, str | None]:
@@ -181,7 +188,10 @@ class ScheduleImportServiceImpl:
 
     def _read(
         self, payload: str | bytes, format: ScheduleFormat
-    ) -> Result[tuple[list[ScheduleTaskRecord], list[TaskDependencyRecord], list[tuple[str, str]]], KernelError]:
+    ) -> Result[
+        tuple[list[ScheduleTaskRecord], list[TaskDependencyRecord], list[tuple[str, str]]],
+        KernelError,
+    ]:
         rows = self._rows(payload, format)
         if not rows.ok:
             return err(rows.error)
@@ -237,9 +247,7 @@ class ScheduleImportServiceImpl:
             format=format,
             rejected=tuple(rejected),
         )
-        self._runtime.context.events.emit(
-            PLANNING_EVENTS.schedule_imported, {"summary": summary}
-        )
+        self._runtime.context.events.emit(PLANNING_EVENTS.schedule_imported, {"summary": summary})
         return ok(summary)
 
     async def reimport(
@@ -262,9 +270,7 @@ class ScheduleImportServiceImpl:
         added = sum(1 for task_id in incoming if task_id not in before)
         removed = sum(1 for task_id in before if task_id not in incoming)
         updated = sum(
-            1
-            for task_id, task in incoming.items()
-            if task_id in before and before[task_id] != task
+            1 for task_id, task in incoming.items() if task_id in before and before[task_id] != task
         )
 
         self._stores.tasks.clear()
@@ -288,9 +294,7 @@ class ScheduleImportServiceImpl:
             removed=removed,
             orphaned_links=orphaned,
         )
-        self._runtime.context.events.emit(
-            PLANNING_EVENTS.schedule_imported, {"summary": summary}
-        )
+        self._runtime.context.events.emit(PLANNING_EVENTS.schedule_imported, {"summary": summary})
         return ok(summary)
 
     def tasks(self, **filter: Any) -> tuple[ScheduleTaskRecord, ...]:
@@ -326,11 +330,15 @@ class ScheduleImportServiceImpl:
                 "planned_finish": task.planned_finish,
                 "actual_start": task.actual_start or "",
                 "actual_finish": task.actual_finish or "",
-                "percent_complete": task.percent_complete if task.percent_complete is not None else "",
+                "percent_complete": task.percent_complete
+                if task.percent_complete is not None
+                else "",
                 "wbs_code": task.wbs_code or "",
                 "parent_id": task.parent_id or "",
                 "critical": "true" if task.critical else "false",
-                "predecessor": predecessors[task.id].predecessor_id if task.id in predecessors else "",
+                "predecessor": predecessors[task.id].predecessor_id
+                if task.id in predecessors
+                else "",
                 "dependency_type": predecessors[task.id].type if task.id in predecessors else "",
                 "lag": predecessors[task.id].lag if task.id in predecessors else "",
             }
@@ -340,13 +348,13 @@ class ScheduleImportServiceImpl:
             return ok(json.dumps({"tasks": rows}, indent=2))
         if format == "csv":
             buffer = io.StringIO()
-            writer = csv.DictWriter(buffer, fieldnames=list(rows[0]) if rows else list(_REQUIRED_COLUMNS))
+            writer = csv.DictWriter(
+                buffer, fieldnames=list(rows[0]) if rows else list(_REQUIRED_COLUMNS)
+            )
             writer.writeheader()
             writer.writerows(rows)
             return ok(buffer.getvalue())
-        return err(
-            KernelError("COMMAND_FAILED", f'Unsupported schedule format "{format}".', {})
-        )
+        return err(KernelError("COMMAND_FAILED", f'Unsupported schedule format "{format}".', {}))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -372,7 +380,9 @@ class TaskModelLinkServiceImpl:
             return err(_not_found("task", task_id))
         if not elements:
             return err(
-                KernelError("COMMAND_FAILED", "A link with no elements links nothing.", {"taskId": task_id})
+                KernelError(
+                    "COMMAND_FAILED", "A link with no elements links nothing.", {"taskId": task_id}
+                )
             )
         record = TaskModelLinkRecord(
             id=self._runtime.ids.next("link"),
@@ -468,9 +478,7 @@ class TaskModelLinkServiceImpl:
             )
         everything = source.match(model_id, {})
         linked = {
-            element_key(element)
-            for link in self._stores.links.all()
-            for element in link.elements
+            element_key(element) for link in self._stores.links.all() for element in link.elements
         }
         return ok(tuple(e for e in everything if element_key(e) not in linked))
 
@@ -575,9 +583,7 @@ class PlannedActualComparisonServiceImpl:
     ) -> Result[tuple[ProgressComparisonRecord, ...], KernelError]:
         moment = parse_timestamp(data_date)
         if moment is None:
-            return err(
-                KernelError("COMMAND_FAILED", f'"{data_date}" is not a readable date.', {})
-            )
+            return err(KernelError("COMMAND_FAILED", f'"{data_date}" is not a readable date.', {}))
 
         wanted = set(task_ids) if task_ids is not None else None
         produced: list[ProgressComparisonRecord] = []

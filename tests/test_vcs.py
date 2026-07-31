@@ -228,7 +228,9 @@ async def test_the_merge_base_is_the_nearest_common_ancestor(repo):
 
     ours = (await repo.save({**SCHEME, "client": "A"}, message="ours", author="ada")).value
     theirs = (
-        await repo.save({**SCHEME, "phase": "RIBA 2"}, message="theirs", author="bob", branch="option-b")
+        await repo.save(
+            {**SCHEME, "phase": "RIBA 2"}, message="theirs", author="bob", branch="option-b"
+        )
     ).value
 
     assert await repo.merge_base(ours.id, theirs.id) == base.id
@@ -240,7 +242,9 @@ async def test_a_merge_of_disjoint_edits_succeeds(repo):
 
     ours = (await repo.save({**SCHEME, "client": "A"}, message="ours", author="ada")).value
     theirs = (
-        await repo.save({**SCHEME, "phase": "RIBA 2"}, message="theirs", author="bob", branch="option-b")
+        await repo.save(
+            {**SCHEME, "phase": "RIBA 2"}, message="theirs", author="bob", branch="option-b"
+        )
     ).value
 
     merged = (await repo.merge(ours=ours.id, theirs=theirs.id, author="ada")).value
@@ -252,13 +256,15 @@ async def test_a_merge_of_disjoint_edits_succeeds(repo):
 
 
 async def test_a_merge_where_both_sides_changed_the_same_thing_reports_a_conflict(repo):
-    """"Ours wins" is a decision a person makes knowing what they discard, not a default."""
+    """ "Ours wins" is a decision a person makes knowing what they discard, not a default."""
     await repo.save(SCHEME, message="initial", author="ada")
     await repo.create_branch("option-b")
 
     ours = (await repo.save({**SCHEME, "name": "Tower North"}, message="ours", author="ada")).value
     theirs = (
-        await repo.save({**SCHEME, "name": "Tower South"}, message="theirs", author="bob", branch="option-b")
+        await repo.save(
+            {**SCHEME, "name": "Tower South"}, message="theirs", author="bob", branch="option-b"
+        )
     ).value
 
     result = (await repo.merge(ours=ours.id, theirs=theirs.id, author="ada")).value

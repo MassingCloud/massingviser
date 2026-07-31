@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -189,7 +190,9 @@ class QuantityTakeoffServiceImpl:
             matched_any = False
             for model_id in models:
                 elements = [
-                    element for element in source.elements(model_id) if _matches(element, rule.filter)
+                    element
+                    for element in source.elements(model_id)
+                    if _matches(element, rule.filter)
                 ]
                 if not elements:
                     continue
@@ -251,8 +254,10 @@ class QuantityTakeoffServiceImpl:
         # duplicates on top of it.
         ran = {rule.id for rule in rules}
         self._stores.quantities.remove_where(
-            lambda quantity: quantity.source.rule_id in ran
-            and (model_ids is None or quantity.model_id in models)
+            lambda quantity: (
+                quantity.source.rule_id in ran
+                and (model_ids is None or quantity.model_id in models)
+            )
         )
         self._stores.quantities.add_many(produced)
 
@@ -263,9 +268,7 @@ class QuantityTakeoffServiceImpl:
             empty_rules=tuple(empty_rules),
             failures=tuple(failures),
         )
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.takeoff_completed, {"summary": summary}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.takeoff_completed, {"summary": summary})
         return ok(summary)
 
     def quantities(self, **filter: Any) -> tuple[QuantityRecord, ...]:
@@ -343,9 +346,7 @@ class ClassificationMappingServiceImpl:
         candidates = (
             self._stores.quantities.all()
             if quantity_ids is None
-            else tuple(
-                q for q in self._stores.quantities.all() if q.id in set(quantity_ids)
-            )
+            else tuple(q for q in self._stores.quantities.all() if q.id in set(quantity_ids))
         )
         mappings = self.mappings(system_id)
 
@@ -613,9 +614,7 @@ class BoqServiceImpl:
             )
 
         self._stores.lines.add_many(lines)
-        updated = self._stores.boqs.update(
-            boq_id, {"line_ids": tuple(line.id for line in lines)}
-        )
+        updated = self._stores.boqs.update(boq_id, {"line_ids": tuple(line.id for line in lines)})
         # Unpriced lines are counted and published. A bill whose total quietly covers only the
         # lines that happened to find a rate is the most expensive kind of wrong: it reconciles
         # against itself and understates the project.
@@ -661,8 +660,8 @@ class BoqServiceImpl:
         return ok(record)
 
     async def remove_line(self, line_id: Id) -> Result[None, KernelError]:
-        return ok(None) if self._stores.lines.remove(line_id) else err(
-            _not_found("boq line", line_id)
+        return (
+            ok(None) if self._stores.lines.remove(line_id) else err(_not_found("boq line", line_id))
         )
 
     def total(self, boq_id: Id) -> Result[Money, KernelError]:
@@ -732,9 +731,7 @@ class EstimateServiceImpl:
             basis_model_versions=self._basis_versions(),
         )
         self._stores.estimates.add(record)
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.estimate_changed, {"record": record}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.estimate_changed, {"record": record})
         return ok(record)
 
     async def recalculate(self, estimate_id: Id) -> Result[EstimateRecord, KernelError]:
@@ -754,9 +751,7 @@ class EstimateServiceImpl:
         subtotal = self._boqs.total(estimate.working_boq_id or estimate.boq_id)
         if not subtotal.ok:
             return err(subtotal.error)
-        total = add_money(
-            subtotal.value, percent_of(subtotal.value, estimate.contingency_percent)
-        )
+        total = add_money(subtotal.value, percent_of(subtotal.value, estimate.contingency_percent))
         if not total.ok:
             return err(total.error)
 
@@ -768,9 +763,7 @@ class EstimateServiceImpl:
                 "basis_model_versions": self._basis_versions(),
             },
         )
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.estimate_changed, {"record": updated}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.estimate_changed, {"record": updated})
         return ok(updated) if updated else err(_not_found("estimate", estimate_id))
 
     async def issue(self, estimate_id: Id) -> Result[EstimateRecord, KernelError]:
@@ -815,9 +808,7 @@ class EstimateServiceImpl:
         updated = self._stores.estimates.update(
             estimate_id, {"status": "issued", "boq_id": frozen_id, "working_boq_id": working_id}
         )
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.estimate_issued, {"record": updated}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.estimate_issued, {"record": updated})
         return ok(updated) if updated else err(_not_found("estimate", estimate_id))
 
     async def revise(self, estimate_id: Id) -> Result[EstimateRecord, KernelError]:
@@ -830,9 +821,7 @@ class EstimateServiceImpl:
         subtotal = self._boqs.total(working_id)
         if not subtotal.ok:
             return err(subtotal.error)
-        total = add_money(
-            subtotal.value, percent_of(subtotal.value, estimate.contingency_percent)
-        )
+        total = add_money(subtotal.value, percent_of(subtotal.value, estimate.contingency_percent))
         if not total.ok:
             return err(total.error)
 
@@ -850,9 +839,7 @@ class EstimateServiceImpl:
         )
         self._stores.estimates.add(revision)
         self._stores.estimates.update(estimate_id, {"status": "superseded"})
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.estimate_changed, {"record": revision}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.estimate_changed, {"record": revision})
         return ok(revision)
 
     def get(self, estimate_id: Id) -> EstimateRecord | None:
@@ -878,9 +865,7 @@ class EstimateServiceImpl:
             )
         return ok(
             {
-                "delta": Money(
-                    right.total.amount_minor - left.total.amount_minor, left.currency
-                ),
+                "delta": Money(right.total.amount_minor - left.total.amount_minor, left.currency),
                 "from": left,
                 "to": right,
             }
@@ -926,9 +911,7 @@ class CashflowForecastServiceImpl:
 
         weight_total = sum(period.weight for period in periods)
         if weight_total <= 0:
-            return err(
-                KernelError("COMMAND_FAILED", "Schedule period weights sum to zero.", {})
-            )
+            return err(KernelError("COMMAND_FAILED", "Schedule period weights sum to zero.", {}))
 
         rows: list[CashflowPeriodRecord] = []
         cumulative = 0
@@ -939,9 +922,7 @@ class CashflowForecastServiceImpl:
             if index == len(periods) - 1:
                 amount = estimate.total.amount_minor - allocated
             else:
-                amount = multiply_money(
-                    estimate.total, period.weight / weight_total
-                ).amount_minor
+                amount = multiply_money(estimate.total, period.weight / weight_total).amount_minor
             allocated += amount
             cumulative += amount
             rows.append(
@@ -961,9 +942,7 @@ class CashflowForecastServiceImpl:
             periods=tuple(rows),
         )
         self._stores.cashflows.add(record)
-        self._runtime.context.events.emit(
-            ESTIMATING_EVENTS.cashflow_generated, {"record": record}
-        )
+        self._runtime.context.events.emit(ESTIMATING_EVENTS.cashflow_generated, {"record": record})
         return ok(record)
 
     async def record_actual(

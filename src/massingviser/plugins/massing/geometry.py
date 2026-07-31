@@ -11,8 +11,9 @@ and treats Z as elevation.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Literal, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 Point2 = "tuple[float, float]"
 
@@ -94,18 +95,14 @@ def centroid(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
     return (cx / (6 * area), cy / (6 * area))
 
 
-def _orientation(
-    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]
-) -> int:
+def _orientation(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> int:
     value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1])
     if abs(value) < EPSILON:
         return 0
     return 1 if value > 0 else -1
 
 
-def _on_segment(
-    a: tuple[float, float], b: tuple[float, float], point: tuple[float, float]
-) -> bool:
+def _on_segment(a: tuple[float, float], b: tuple[float, float], point: tuple[float, float]) -> bool:
     return (
         point[0] <= max(a[0], b[0]) + EPSILON
         and point[0] >= min(a[0], b[0]) - EPSILON
@@ -163,9 +160,7 @@ def is_simple_polygon(points: Sequence[tuple[float, float]]) -> bool:
     return True
 
 
-def point_in_polygon(
-    point: tuple[float, float], polygon: Sequence[tuple[float, float]]
-) -> bool:
+def point_in_polygon(point: tuple[float, float], polygon: Sequence[tuple[float, float]]) -> bool:
     inside = False
     count = len(polygon)
     j = count - 1

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from ..kernel import (
-    DocumentMigrator,
     KernelError,
     Result,
     VersionedDocument,
@@ -53,7 +53,7 @@ class MigrationRegistry:
         self._steps: dict[str, dict[int, MigrationDefinition]] = {}
         self._latest: dict[str, int] = {}
 
-    def declare(self, schema: str, version: int) -> "MigrationRegistry":
+    def declare(self, schema: str, version: int) -> MigrationRegistry:
         """Declare the current version of a schema that has no migrations yet.
 
         Needed because "latest" cannot always be inferred: a brand-new v1 schema has no steps, and
@@ -64,7 +64,7 @@ class MigrationRegistry:
             self._latest[schema] = version
         return self
 
-    def register(self, definition: MigrationDefinition) -> "MigrationRegistry":
+    def register(self, definition: MigrationDefinition) -> MigrationRegistry:
         if definition.to_version <= definition.from_version:
             raise KernelError(
                 "MIGRATION_FAILED",
@@ -82,15 +82,14 @@ class MigrationRegistry:
             # runs would depend on registration order, and the two could disagree about the result.
             raise KernelError(
                 "MIGRATION_FAILED",
-                f"Duplicate migration from v{definition.from_version} "
-                f'for "{definition.schema}".',
+                f'Duplicate migration from v{definition.from_version} for "{definition.schema}".',
                 {"schema": definition.schema, "from": definition.from_version},
             )
         by_schema[definition.from_version] = definition
         self.declare(definition.schema, definition.to_version)
         return self
 
-    def register_all(self, definitions: Sequence[MigrationDefinition]) -> "MigrationRegistry":
+    def register_all(self, definitions: Sequence[MigrationDefinition]) -> MigrationRegistry:
         for definition in definitions:
             self.register(definition)
         return self
@@ -106,7 +105,9 @@ class MigrationRegistry:
         target = self._latest.get(schema)
         if target is None:
             return err(
-                KernelError("MIGRATION_PATH_MISSING", f'Unknown schema "{schema}".', {"schema": schema})
+                KernelError(
+                    "MIGRATION_PATH_MISSING", f'Unknown schema "{schema}".', {"schema": schema}
+                )
             )
         steps: list[MigrationDefinition] = []
         version = from_version
@@ -158,7 +159,10 @@ class MigrationRegistry:
             # this one document with the step named beats an unhandled raise that loses the whole
             # project.
             applied = attempt(
-                lambda: step.migrate(data),
+                # Bound as defaults rather than captured. `attempt` runs this immediately, so late
+                # binding is harmless today -- but a lambda in a loop that closes over the loop
+                # variable is one refactor away from migrating every document with the last step.
+                lambda step=step, data=data: step.migrate(data),
                 "MIGRATION_FAILED",
                 f'Migration "{document.schema}" v{step.from_version} -> v{step.to_version} failed.',
             )

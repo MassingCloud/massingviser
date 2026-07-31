@@ -7,6 +7,7 @@ without ifcopenshell runs the other fifteen families unchanged.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -50,22 +51,47 @@ def _sphere_mesh(subdivisions: int = 3):
     """A unit icosphere, built without trimesh so the LOD tests need no extras."""
     t = (1.0 + math.sqrt(5.0)) / 2.0
     vertices = [
-        (-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0),
-        (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
-        (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1),
+        (-1, t, 0),
+        (1, t, 0),
+        (-1, -t, 0),
+        (1, -t, 0),
+        (0, -1, t),
+        (0, 1, t),
+        (0, -1, -t),
+        (0, 1, -t),
+        (t, 0, -1),
+        (t, 0, 1),
+        (-t, 0, -1),
+        (-t, 0, 1),
     ]
     faces = [
-        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
-        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
-        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
-        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+        (0, 11, 5),
+        (0, 5, 1),
+        (0, 1, 7),
+        (0, 7, 10),
+        (0, 10, 11),
+        (1, 5, 9),
+        (5, 11, 4),
+        (11, 10, 2),
+        (10, 7, 6),
+        (7, 1, 8),
+        (3, 9, 4),
+        (3, 4, 2),
+        (3, 2, 6),
+        (3, 6, 8),
+        (3, 8, 9),
+        (4, 9, 5),
+        (2, 4, 11),
+        (6, 2, 10),
+        (8, 6, 7),
+        (9, 8, 1),
     ]
     vertices = [tuple(v / math.sqrt(sum(c * c for c in p)) for v in p) for p in vertices]
     for _ in range(subdivisions):
         new_faces = []
         cache: dict[tuple[int, int], int] = {}
 
-        def midpoint(a: int, b: int) -> int:
+        def midpoint(a: int, b: int, *, cache: dict[tuple[int, int], int] = cache) -> int:
             key = (min(a, b), max(a, b))
             if key not in cache:
                 point = tuple((vertices[a][i] + vertices[b][i]) / 2 for i in range(3))
@@ -174,9 +200,7 @@ def ifc_path(tmp_path_factory):
     ifcopenshell.api.aggregate.assign_object(file, products=[storey], relating_object=building)
 
     for index in range(3):
-        wall = ifcopenshell.api.root.create_entity(
-            file, ifc_class="IfcWall", name=f"Wall {index}"
-        )
+        wall = ifcopenshell.api.root.create_entity(file, ifc_class="IfcWall", name=f"Wall {index}")
         representation = ifcopenshell.api.geometry.add_wall_representation(
             file, context=body, length=5.0, height=3.0, thickness=0.2
         )
@@ -190,9 +214,7 @@ def ifc_path(tmp_path_factory):
                 [[1, 0, 0, index * 6.0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float
             ),
         )
-        ifcopenshell.api.spatial.assign_container(
-            file, products=[wall], relating_structure=storey
-        )
+        ifcopenshell.api.spatial.assign_container(file, products=[wall], relating_structure=storey)
 
     path = tmp_path_factory.mktemp("ifc") / "walls.ifc"
     file.write(str(path))
@@ -234,9 +256,7 @@ def test_spatial_structure_is_excluded_from_geometry(ifc_path):
     """Tessellating an IfcSpace produces a solid that clashes with everything inside it."""
     ifc = load("ifc")
     model = ifc.open_ifc(ifc_path, model_id="m1")
-    assert not any(
-        element.ifc_class in ifc.SPATIAL_CLASSES for element in model.elements
-    )
+    assert not any(element.ifc_class in ifc.SPATIAL_CLASSES for element in model.elements)
 
 
 @ifc_only
@@ -245,11 +265,11 @@ def test_one_parsed_model_satisfies_every_capability_that_wants_elements(ifc_pat
     ifc = load("ifc")
     source = ifc.IfcModelSource(ifc.open_ifc(ifc_path, model_id="m1"))
 
-    assert len(source.elements("m1")) == 3           # estimating
-    assert len(source.snapshot("m1", "1")) == 3      # coordination
-    assert len(source.nodes()) == 3                  # engine bridge
-    assert len(source.global_ids("m1")) == 3         # markup
-    assert len(source.boxes()) == 3                  # geometry
+    assert len(source.elements("m1")) == 3  # estimating
+    assert len(source.snapshot("m1", "1")) == 3  # coordination
+    assert len(source.nodes()) == 3  # engine bridge
+    assert len(source.global_ids("m1")) == 3  # markup
+    assert len(source.boxes()) == 3  # geometry
 
     first = source.global_ids("m1")[0]
     assert source.exists("m1", first)
@@ -284,7 +304,7 @@ async def test_importing_ifc_through_the_command_bus_rewires_the_platform(ifc_pa
 
     kernel = build_kernel()
     await kernel.start()
-    payload = open(ifc_path, "rb").read()
+    payload = Path(ifc_path).read_bytes()
 
     summary = (
         await kernel.commands.execute(
@@ -349,7 +369,6 @@ def test_narrow_phase_reports_intersection_volume_not_box_overlap():
 
 @solids_only
 def test_an_element_far_away_is_never_a_candidate():
-    solids = load("solids")
     clashes = load("solids").SolidClashEngine(_Meshes(), model_id="m1").pairs()
     assert all("C" not in (clash.a, clash.b) for clash in clashes)
 

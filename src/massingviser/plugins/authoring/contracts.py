@@ -8,8 +8,9 @@ session opened, and refuses rather than overwriting.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import ElementRef, Id, IsoTimestamp
@@ -157,9 +158,7 @@ class EditHistoryService(Protocol):
     ) -> Result[EditHistoryEntry, KernelError]: ...
 
 
-EditHistoryToken: CapabilityToken[EditHistoryService] = create_capability_token(
-    "authoring.history"
-)
+EditHistoryToken: CapabilityToken[EditHistoryService] = create_capability_token("authoring.history")
 
 
 @dataclass(frozen=True)

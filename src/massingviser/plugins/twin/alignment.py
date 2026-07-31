@@ -13,8 +13,8 @@ else below the viewer.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 #: Below this, the control points are effectively coincident and no rotation is recoverable.
 EPSILON = 1e-9
@@ -40,10 +40,22 @@ class PlanarFit:
         sin = math.sin(self.rotation) * self.scale
         tx, ty, tz = self.translation
         return (
-            cos, sin, 0.0, 0.0,
-            -sin, cos, 0.0, 0.0,
-            0.0, 0.0, self.scale, 0.0,
-            tx, ty, tz, 1.0,
+            cos,
+            sin,
+            0.0,
+            0.0,
+            -sin,
+            cos,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            self.scale,
+            0.0,
+            tx,
+            ty,
+            tz,
+            1.0,
         )
 
     def apply(self, point: Sequence[float]) -> tuple[float, float, float]:
@@ -86,7 +98,7 @@ def fit_planar(
     numerator = 0.0
     denominator = 0.0
     source_energy = 0.0
-    for source, target in zip(sources, targets):
+    for source, target in zip(sources, targets, strict=True):
         ax, ay = source[0] - sx, source[1] - sy
         bx, by = target[0] - tx, target[1] - ty
         denominator += ax * bx + ay * by
@@ -120,7 +132,7 @@ def fit_planar(
         point_count=count,
     )
     squared = 0.0
-    for source, target in zip(sources, targets):
+    for source, target in zip(sources, targets, strict=True):
         px, py, pz = fit.apply(source)
         qz = target[2] if len(target) > 2 else 0.0
         squared += (px - target[0]) ** 2 + (py - target[1]) ** 2 + (pz - qz) ** 2

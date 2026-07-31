@@ -10,16 +10,13 @@ from __future__ import annotations
 import pytest
 
 from massingviser import build_kernel
-from massingviser.app import DEFAULT_PLUGINS
-from massingviser.app import MASSING_MODEL_ID, MASSING_MODEL_VERSION
+from massingviser.app import DEFAULT_PLUGINS, MASSING_MODEL_ID, MASSING_MODEL_VERSION
 from massingviser.plugins.estimating import (
     ESTIMATING_COMMANDS,
     BoqToken,
-    CashflowForecastToken,
-    EstimateToken,
     QuantityTakeoffToken,
 )
-from massingviser.plugins.markup import MARKUP_COMMANDS, AnchorToken, IssueToken
+from massingviser.plugins.markup import MARKUP_COMMANDS
 from massingviser.plugins.massing import (
     MASSING_COMMANDS,
     MassingToken,
@@ -233,9 +230,7 @@ async def test_undo_reaches_across_the_whole_session():
     masses = kernel.capabilities.get(MassingToken)
 
     await kernel.commands.execute(MASSING_COMMANDS.set_story_count, {"id": mass.id, "count": 14})
-    await kernel.commands.execute(
-        MASSING_COMMANDS.set_color, {"id": mass.id, "color": "#F58518"}
-    )
+    await kernel.commands.execute(MASSING_COMMANDS.set_color, {"id": mass.id, "color": "#F58518"})
     await kernel.commands.execute(MASSING_COMMANDS.duplicate_mass, {"id": mass.id})
     assert len(masses.list()) == 2
 

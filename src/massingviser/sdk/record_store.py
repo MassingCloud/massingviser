@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass, replace
-from typing import Any, Callable, Generic, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from ..kernel import Slice
 

@@ -9,8 +9,9 @@ measures badly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (
@@ -39,9 +40,7 @@ class TwinObjectFactory(Protocol):
     def dispose(self, runtime_object: Any) -> None: ...
 
 
-TwinObjectFactoryToken: CapabilityToken[TwinObjectFactory] = create_capability_token(
-    "twin.factory"
-)
+TwinObjectFactoryToken: CapabilityToken[TwinObjectFactory] = create_capability_token("twin.factory")
 
 
 @runtime_checkable
@@ -104,9 +103,7 @@ class TwinTimelineService(Protocol):
     async def build(
         self, twin_object_id: Id, metric: str, from_time: IsoTimestamp, to_time: IsoTimestamp
     ) -> Result[TwinTimelineRecord, KernelError]: ...
-    def value_at(
-        self, timeline_id: Id, at: IsoTimestamp
-    ) -> TwinObservationRecord | None: ...
+    def value_at(self, timeline_id: Id, at: IsoTimestamp) -> TwinObservationRecord | None: ...
 
 
 TwinTimelineToken: CapabilityToken[TwinTimelineService] = create_capability_token("twin.timeline")

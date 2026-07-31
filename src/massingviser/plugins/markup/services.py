@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -86,8 +87,7 @@ class MarkupServiceImpl:
             id=self._runtime.ids.next("markup"),
             kind=markup.get("kind", "pin"),
             created_at=self._runtime.clock.iso(),
-            created_by=markup.get("created_by")
-            or self._runtime.context.permissions.identity.id,
+            created_by=markup.get("created_by") or self._runtime.context.permissions.identity.id,
             viewpoint_id=markup.get("viewpoint_id"),
             model_id=markup.get("model_id"),
             element_ids=element_ids,
@@ -101,9 +101,7 @@ class MarkupServiceImpl:
         self._runtime.context.events.emit(MARKUP_EVENTS.created, {"record": record})
         return ok(record)
 
-    async def update(
-        self, id: Id, changes: Mapping[str, Any]
-    ) -> Result[MarkupRecord, KernelError]:
+    async def update(self, id: Id, changes: Mapping[str, Any]) -> Result[MarkupRecord, KernelError]:
         updated = self._stores.markups.update(id, dict(changes))
         if updated is None:
             return err(_not_found("markup", id))
@@ -221,9 +219,7 @@ class AnchorServiceImpl:
             if exists:
                 resolved_count += 1
                 if not anchor.resolved:
-                    self._stores.anchors.update(
-                        anchor.id, {"resolved": True, "resolved_at": stamp}
-                    )
+                    self._stores.anchors.update(anchor.id, {"resolved": True, "resolved_at": stamp})
                 continue
             orphaned.append(anchor.markup_id)
             if anchor.resolved:
@@ -271,9 +267,7 @@ class IssueServiceImpl:
         self._runtime.context.events.emit(MARKUP_EVENTS.issue_created, {"record": record})
         return ok(record)
 
-    async def update(
-        self, id: Id, changes: Mapping[str, Any]
-    ) -> Result[IssueRecord, KernelError]:
+    async def update(self, id: Id, changes: Mapping[str, Any]) -> Result[IssueRecord, KernelError]:
         # `status` moves only through `transition`, which is where the state machine lives.
         safe = {key: value for key, value in changes.items() if key != "status"}
         updated = self._stores.issues.update(id, safe)
@@ -351,8 +345,7 @@ class IssueServiceImpl:
 
     def _ensure_thread(self, subject_id: Id, subject_kind: str) -> CommentThread:
         existing = self._stores.threads.find(
-            lambda thread: thread.subject_id == subject_id
-            and thread.subject_kind == subject_kind
+            lambda thread: thread.subject_id == subject_id and thread.subject_kind == subject_kind
         )
         if existing is not None:
             return existing
@@ -375,8 +368,7 @@ class CommentServiceImpl:
 
     def thread(self, subject_id: Id, subject_kind: str) -> CommentThread | None:
         return self._stores.threads.find(
-            lambda thread: thread.subject_id == subject_id
-            and thread.subject_kind == subject_kind
+            lambda thread: thread.subject_id == subject_id and thread.subject_kind == subject_kind
         )
 
     async def post(
@@ -486,9 +478,7 @@ class ReviewServiceImpl:
                     {"sessionId": session_id},
                 )
             )
-        updated = self._stores.sessions.update(
-            session_id, {"ended_at": self._runtime.clock.iso()}
-        )
+        updated = self._stores.sessions.update(session_id, {"ended_at": self._runtime.clock.iso()})
         return ok(updated) if updated else err(_not_found("review session", session_id))
 
     def sessions(self) -> tuple[ReviewSession, ...]:

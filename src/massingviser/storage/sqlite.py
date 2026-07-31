@@ -19,7 +19,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .filesystem import BYTES_TAG, compose_default, compose_object_hook
+from .filesystem import compose_default, compose_object_hook
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
@@ -110,9 +110,7 @@ class SqliteStorageAdapter:
     async def keys(self, prefix: str = "") -> list[str]:
         def _list() -> list[str]:
             if not prefix:
-                rows = self._connection.execute(
-                    "SELECT key FROM records ORDER BY key"
-                ).fetchall()
+                rows = self._connection.execute("SELECT key FROM records ORDER BY key").fetchall()
             else:
                 rows = self._connection.execute(
                     "SELECT key FROM records WHERE key >= ? AND key < ? ORDER BY key",
@@ -133,7 +131,7 @@ class SqliteStorageAdapter:
     def close(self) -> None:
         self._connection.close()
 
-    def __enter__(self) -> "SqliteStorageAdapter":
+    def __enter__(self) -> SqliteStorageAdapter:
         return self
 
     def __exit__(self, *_exc: object) -> None:

@@ -11,9 +11,8 @@ import json
 
 import pytest
 
-from massingviser.kernel import err, ok
+from massingviser.kernel import ok
 from massingviser.plugins.analytics import (
-    ANALYTICS_COMMANDS,
     AnalyticsToken,
     MetricProviderToken,
     MetricValue,
@@ -23,6 +22,7 @@ from massingviser.plugins.analytics import (
 from massingviser.plugins.engine import (
     PayloadRef,
     RealityLayer,
+    SceneExportToken,
     SceneNode,
     SceneNodeSourceToken,
     SceneRelationship,
@@ -32,7 +32,6 @@ from massingviser.plugins.engine import (
     to_manifest,
     validate_scene_package,
 )
-from massingviser.plugins.engine import SceneExportToken
 from massingviser.plugins.interop import (
     ConnectorPolicy,
     ImportAdapterToken,
@@ -41,7 +40,6 @@ from massingviser.plugins.interop import (
     interop_plugin,
 )
 from massingviser.plugins.shell import ShellToken, StatusItem, shell_plugin
-
 
 # ---------------------------------------------------------------------------------------------
 # Interop
@@ -198,8 +196,11 @@ async def test_a_forecast_carries_bounds_that_widen_with_distance(harness):
 
     forecast = (await analytics.forecast("cost.total", horizon=3)).value
     assert len(forecast.values) == len(forecast.lower) == len(forecast.upper) == 3
-    assert all(lo < v < hi for lo, v, hi in zip(forecast.lower, forecast.values, forecast.upper))
-    widths = [hi - lo for lo, hi in zip(forecast.lower, forecast.upper)]
+    assert all(
+        lo < v < hi
+        for lo, v, hi in zip(forecast.lower, forecast.values, forecast.upper, strict=True)
+    )
+    widths = [hi - lo for lo, hi in zip(forecast.lower, forecast.upper, strict=True)]
     assert widths[0] < widths[-1]  # further out is less certain, and says so
     assert forecast.basis == 5
 
@@ -313,8 +314,11 @@ def _nodes():
 
 
 PAYLOAD = PayloadRef(
-    id="geometry-0", role="geometry", path="payloads/geometry-0.glb",
-    encoding="model/gltf-binary", byte_length=1024,
+    id="geometry-0",
+    role="geometry",
+    path="payloads/geometry-0.glb",
+    encoding="model/gltf-binary",
+    byte_length=1024,
 )
 
 
@@ -341,8 +345,11 @@ def test_a_node_referencing_an_undeclared_payload_is_refused():
 
 def test_indexes_are_precomputed_by_the_exporter():
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
-        nodes=_nodes(), payloads=[PAYLOAD],
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=_nodes(),
+        payloads=[PAYLOAD],
     ).value
     assert package.indexes.by_class["IfcWall"] == (0, 1)
     assert package.indexes.by_level["L2"] == (2,)
@@ -351,8 +358,11 @@ def test_indexes_are_precomputed_by_the_exporter():
 
 def test_semantics_travel_rather_than_being_flattened():
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
-        nodes=_nodes(), payloads=[PAYLOAD],
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=_nodes(),
+        payloads=[PAYLOAD],
     ).value
     query = create_scene_query(package)
     wall = query.by_global_id("WALL-1")
@@ -365,8 +375,11 @@ def test_semantics_travel_rather_than_being_flattened():
 
 def test_the_transient_local_id_never_reaches_the_index():
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
-        nodes=_nodes(), payloads=[PAYLOAD],
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=_nodes(),
+        payloads=[PAYLOAD],
     ).value
     assert 4711 not in package.indexes.by_global_id
     assert all(isinstance(key, str) for key in package.indexes.by_global_id)
@@ -374,15 +387,20 @@ def test_the_transient_local_id_never_reaches_the_index():
 
 def test_validation_reports_a_missing_payload_and_a_semantic_only_package():
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
-        nodes=_nodes(), payloads=[PAYLOAD],
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=_nodes(),
+        payloads=[PAYLOAD],
     ).value
 
     report = validate_scene_package(package, available_payloads=[])
     assert not report.ok and "not in the archive" in report.errors[0]
 
     semantic_only = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
         nodes=[SceneNode("W1", "IfcWall")],
     ).value
     report = validate_scene_package(semantic_only)
@@ -393,7 +411,9 @@ def test_validation_reports_a_missing_payload_and_a_semantic_only_package():
 def test_a_reality_layer_carries_its_measurable_flag():
     """So a splat arrives marked as something to render, not something to dimension."""
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="m",
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
         nodes=[SceneNode("W1", "IfcWall")],
         reality_layers=[RealityLayer(id="scan", name="West elevation", measurable=False)],
     ).value
@@ -404,8 +424,11 @@ def test_a_reality_layer_carries_its_measurable_flag():
 
 def test_the_manifest_is_camel_case_so_one_importer_reads_both_implementations():
     package = build_scene_package(
-        generator="t", generated_at="2026-01-01", source_units="mm",
-        nodes=_nodes(), payloads=[PAYLOAD],
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="mm",
+        nodes=_nodes(),
+        payloads=[PAYLOAD],
     ).value
     manifest = json.loads(json.dumps(to_manifest(package)))
     assert manifest["sourceUnits"] == "mm"

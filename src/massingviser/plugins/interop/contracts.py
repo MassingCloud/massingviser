@@ -8,11 +8,12 @@ disagreement is cheaper than debugging that.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
-from ...schema import Id, IsoTimestamp
+from ...schema import IsoTimestamp
 
 #: How much confidence a detection carries.
 #:

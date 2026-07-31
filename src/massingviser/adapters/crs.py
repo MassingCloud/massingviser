@@ -18,8 +18,8 @@ between them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Iterable, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from pyproj import CRS, Transformer
@@ -166,9 +166,7 @@ def validate_georeference(reference: GeoReference) -> GeoValidation:
 
     if reference.vertical_datum is None:
         # Two datasets can agree exactly in plan and sit a metre apart in height.
-        warnings.append(
-            "no vertical datum: heights cannot be reconciled with another dataset"
-        )
+        warnings.append("no vertical datum: heights cannot be reconciled with another dataset")
     if not reference.verified:
         warnings.append(
             f'georeference method is "{reference.method or "unstated"}", not survey or control '

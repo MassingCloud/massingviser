@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ...kernel import CommandDefinition, CommandInvocation, PluginContext, UIContribution
 from ...sdk import Clock, IdFactory, SequentialIdFactory, SystemClock, define_plugin
@@ -33,9 +34,7 @@ def _unwrap(result: Any) -> Any:
     return result.value
 
 
-def create_coordination_plugin(
-    *, clock: Clock | None = None, ids: IdFactory | None = None
-) -> Any:
+def create_coordination_plugin(*, clock: Clock | None = None, ids: IdFactory | None = None) -> Any:
     """Clash, validation, routing and revision diff, packaged as a plugin.
 
     Owns the *workflow* and none of the geometry. The intersection test, the model snapshots and

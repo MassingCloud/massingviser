@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import (
     CapabilityToken,
@@ -9,12 +10,11 @@ from ...kernel import (
     KernelError,
     PluginContext,
     Result,
-    UIContribution,
     create_capability_token,
     err,
     ok,
 )
-from ...sdk import Clock, IdFactory, SequentialIdFactory, SystemClock, define_plugin
+from ...sdk import Clock, IdFactory, SystemClock, define_plugin
 from .scene import (
     PayloadRef,
     RealityLayer,
@@ -22,7 +22,6 @@ from .scene import (
     ScenePackage,
     SceneValidation,
     build_scene_package,
-    create_scene_query,
     to_manifest,
     validate_scene_package,
 )
@@ -120,9 +119,7 @@ class SceneExportServiceImpl:
             source_units=next(iter(units)) if units else "m",
             nodes=[node for source in sources for node in source.nodes()],
             payloads=[payload for source in sources for payload in source.payloads()],
-            reality_layers=[
-                layer for source in sources for layer in source.reality_layers()
-            ],
+            reality_layers=[layer for source in sources for layer in source.reality_layers()],
             crs=next(iter(declared)) if declared else None,
         )
 
@@ -133,9 +130,7 @@ class SceneExportServiceImpl:
         built = await self.build()
         if not built.ok:
             return err(built.error)
-        self._context.events.emit(
-            ENGINE_EVENTS.scene_built, {"nodes": len(built.value.nodes)}
-        )
+        self._context.events.emit(ENGINE_EVENTS.scene_built, {"nodes": len(built.value.nodes)})
         return ok(json.dumps(to_manifest(built.value), indent=2))
 
 

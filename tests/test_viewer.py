@@ -46,11 +46,7 @@ def _scene_names(app) -> set[str]:
 
 
 def _storey_meshes(app, mass_id: str) -> list[str]:
-    return [
-        name
-        for name in _scene_names(app)
-        if name.startswith(f"/masses/{mass_id}/story_")
-    ]
+    return [name for name in _scene_names(app) if name.startswith(f"/masses/{mass_id}/story_")]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -161,9 +157,7 @@ def test_the_demo_scheme_renders_every_block_including_the_courtyard(app):
 
 
 def test_a_failed_command_is_surfaced_not_swallowed(app):
-    app._report(
-        app.bridge.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0)]}), ""
-    )
+    app._report(app.bridge.execute(MASSING_COMMANDS.sketch_profile, {"points": [(0, 0, 0)]}), "")
     assert "⚠️" in app._status.content
 
 

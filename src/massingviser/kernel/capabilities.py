@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from .disposable import Disposable, to_disposable
 from .errors import KernelError
-from .result import Err, Ok, Result, err, ok
+from .result import Result, err, ok
 from .semver import satisfies
 
 T = TypeVar("T")

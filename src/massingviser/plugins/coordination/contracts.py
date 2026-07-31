@@ -7,8 +7,9 @@ common way clash workflows fail in practice. Everything here is built around a s
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (
@@ -138,7 +139,9 @@ class ValidationRule(Protocol):
 
     @property
     def descriptor(self) -> ValidationRuleRecord: ...
-    def check(self, model_id: Id, elements: Sequence[SnapshotElement]) -> Sequence[ValidationFinding]: ...
+    def check(
+        self, model_id: Id, elements: Sequence[SnapshotElement]
+    ) -> Sequence[ValidationFinding]: ...
 
 
 ValidationRuleToken: CapabilityToken[ValidationRule] = create_capability_token("coordination.rule")
@@ -237,7 +240,9 @@ class RevisionDiffService(Protocol):
     async def compare(
         self, model_id: Id, from_version: str, to_version: str
     ) -> Result[RevisionDiffRecord, KernelError]: ...
-    async def compare_to_previous(self, model_id: Id) -> Result[RevisionDiffRecord, KernelError]: ...
+    async def compare_to_previous(
+        self, model_id: Id
+    ) -> Result[RevisionDiffRecord, KernelError]: ...
     def get(self, diff_id: Id) -> RevisionDiffRecord | None: ...
     def list(self) -> tuple[RevisionDiffRecord, ...]: ...
 

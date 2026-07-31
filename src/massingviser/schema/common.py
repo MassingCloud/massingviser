@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from dataclasses import dataclass
 
 #: Opaque identifier. Stable across sessions and safe to persist and cross-reference.
 Id = str
@@ -58,7 +57,7 @@ class ElementRef:
     #: IFC GlobalId. Stable, persistable identity.
     global_id: str
     #: Session-scoped runtime handle. Cache, never store.
-    local_id: "int | str | None" = None
+    local_id: int | str | None = None
 
 
 def same_element(a: ElementRef, b: ElementRef) -> bool:
@@ -98,19 +97,19 @@ class Money:
         """Presentation only. Never feed this back into arithmetic."""
         return self.amount_minor / 100.0
 
-    def __add__(self, other: "Money") -> "Money":
+    def __add__(self, other: Money) -> Money:
         self._assert_same_currency(other)
         return Money(self.amount_minor + other.amount_minor, self.currency)
 
-    def __sub__(self, other: "Money") -> "Money":
+    def __sub__(self, other: Money) -> Money:
         self._assert_same_currency(other)
         return Money(self.amount_minor - other.amount_minor, self.currency)
 
-    def scaled(self, factor: float) -> "Money":
+    def scaled(self, factor: float) -> Money:
         """Multiply by a quantity, rounding half-up to the nearest minor unit."""
         return Money(int(_round_half_up(self.amount_minor * factor)), self.currency)
 
-    def _assert_same_currency(self, other: "Money") -> None:
+    def _assert_same_currency(self, other: Money) -> None:
         if self.currency != other.currency:
             raise ValueError(
                 f"Cannot combine {self.currency} with {other.currency}; convert explicitly."

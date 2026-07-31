@@ -11,9 +11,9 @@ the interval is the honest part of the answer.
 from __future__ import annotations
 
 import math
-import statistics
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import (
     CapabilityToken,
@@ -27,8 +27,15 @@ from ...kernel import (
     ok,
 )
 from ...schema import Id, IsoTimestamp
-from ...sdk import Clock, IdFactory, RecordStore, SequentialIdFactory, SystemClock
-from ...sdk import create_record_store, define_plugin
+from ...sdk import (
+    Clock,
+    IdFactory,
+    RecordStore,
+    SequentialIdFactory,
+    SystemClock,
+    create_record_store,
+    define_plugin,
+)
 
 PLUGIN_ID = "massingviser.analytics"
 PLUGIN_VERSION = "0.1.0"
@@ -51,9 +58,7 @@ class MetricProvider(Protocol):
     def collect(self) -> Sequence[MetricValue]: ...
 
 
-MetricProviderToken: CapabilityToken[MetricProvider] = create_capability_token(
-    "analytics.provider"
-)
+MetricProviderToken: CapabilityToken[MetricProvider] = create_capability_token("analytics.provider")
 
 
 @dataclass(frozen=True)
@@ -155,13 +160,13 @@ def linear_forecast(
     mean_y = sum(values) / n
     denominator = sum((x - mean_x) ** 2 for x in xs)
     slope = (
-        sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, values)) / denominator
+        sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, values, strict=True)) / denominator
         if denominator
         else 0.0
     )
     intercept = mean_y - slope * mean_x
 
-    residuals = [y - (intercept + slope * x) for x, y in zip(xs, values)]
+    residuals = [y - (intercept + slope * x) for x, y in zip(xs, values, strict=True)]
     # n-2 degrees of freedom: two were spent fitting the line.
     dof = max(n - 2, 1)
     sigma = math.sqrt(sum(r * r for r in residuals) / dof)
@@ -175,8 +180,10 @@ def linear_forecast(
         point = intercept + slope * x
         # The interval widens with distance from the data, which is the property that stops a
         # far-horizon number being read as though it were a near one.
-        spread = z * sigma * math.sqrt(
-            1 + 1 / n + ((x - mean_x) ** 2 / denominator if denominator else 0.0)
+        spread = (
+            z
+            * sigma
+            * math.sqrt(1 + 1 / n + ((x - mean_x) ** 2 / denominator if denominator else 0.0))
         )
         projected.append(point)
         lower.append(point - spread)
@@ -299,7 +306,9 @@ class AnalyticsServiceImpl:
         self, key: str, *, horizon: int = 3, confidence: float = 0.95
     ) -> Result[Forecast, KernelError]:
         if horizon < 1:
-            return err(KernelError("COMMAND_FAILED", "A forecast needs a horizon of at least 1.", {}))
+            return err(
+                KernelError("COMMAND_FAILED", "A forecast needs a horizon of at least 1.", {})
+            )
         series = [sample.value for sample in self.history(key)]
         if len(series) < 2:
             return err(

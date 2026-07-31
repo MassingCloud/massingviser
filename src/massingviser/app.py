@@ -14,9 +14,21 @@ change by a line.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
+from .geometry import SceneIndex, SpatialIndexToken
 from .kernel import Kernel, create_kernel
+from .plugins.analytics import MetricProviderToken, MetricValue, analytics_plugin
+from .plugins.authoring import authoring_plugin
+from .plugins.coordination import (
+    ClashEngineToken,
+    ModelSnapshotToken,
+    RawClash,
+    SnapshotElement,
+    coordination_plugin,
+)
+from .plugins.engine import SceneNode, SceneNodeSourceToken, engine_plugin
 from .plugins.estimating import (
     BoqToken,
     ModelElementSourceToken,
@@ -25,26 +37,11 @@ from .plugins.estimating import (
     TakeoffElement,
     estimating_plugin,
 )
-from .plugins.coordination import (
-    ClashEngineToken,
-    ModelSnapshotToken,
-    RawClash,
-    SnapshotElement,
-    coordination_plugin,
-)
-from .plugins.authoring import authoring_plugin
 from .plugins.families import families_plugin
 from .plugins.federation import federation_plugin
-from .plugins.markup import ElementResolverToken, markup_plugin
-from .plugins.twin import twin_plugin
-from .plugins.analytics import MetricProviderToken, MetricValue, analytics_plugin
-from .plugins.engine import SceneNode, SceneNodeSourceToken, engine_plugin
 from .plugins.icdd import icdd_plugin
 from .plugins.interop import interop_plugin
-from .plugins.shell import shell_plugin
-from .plugins.planning import ElementFilterSourceToken, planning_plugin
-from .plugins.procurement import BoqLineSourceToken, PackageBoqLine, procurement_plugin
-from .geometry import SceneIndex, SpatialIndexToken
+from .plugins.markup import ElementResolverToken, markup_plugin
 from .plugins.massing import (
     MassingToken,
     MetricsToken,
@@ -52,15 +49,20 @@ from .plugins.massing import (
     StoryToken,
     massing_plugin,
 )
+from .plugins.planning import ElementFilterSourceToken, planning_plugin
+from .plugins.procurement import BoqLineSourceToken, PackageBoqLine, procurement_plugin
+from .plugins.shell import shell_plugin
+from .plugins.twin import twin_plugin
+from .schema import create_default_migration_registry
+from .sdk import define_plugin
+
+
 def _adapters_plugin() -> Any:
     """Imported lazily so a deployment with no extras never touches the adapter modules."""
     from .adapters.plugin import create_adapters_plugin
 
     return create_adapters_plugin()
 
-
-from .schema import create_default_migration_registry
-from .sdk import define_plugin
 
 #: The model id massing geometry is published under.
 #:
@@ -370,9 +372,11 @@ class _BoqLineBridge:
             return ()
         wanted = set(line_ids) if line_ids is not None else None
         out: list[PackageBoqLine] = []
-        for boq in self._kernel.state.get_slice(
-            "massingviser.estimating-5d/boqs"
-        ).get() if self._kernel.state.has_slice("massingviser.estimating-5d/boqs") else ():
+        for boq in (
+            self._kernel.state.get_slice("massingviser.estimating-5d/boqs").get()
+            if self._kernel.state.has_slice("massingviser.estimating-5d/boqs")
+            else ()
+        ):
             for line in boqs.lines(boq.id):
                 if wanted is not None and line.id not in wanted:
                     continue
@@ -490,20 +494,12 @@ def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
         context.capabilities.provide(
             ElementFilterSourceToken, _MassingElementFilter(source), version="0.1.0"
         )
-        context.capabilities.provide(
-            ModelSnapshotToken, _MassingSnapshots(source), version="0.1.0"
-        )
+        context.capabilities.provide(ModelSnapshotToken, _MassingSnapshots(source), version="0.1.0")
         spatial = _MassingSpatialIndex(kernel)
         context.capabilities.provide(SpatialIndexToken, spatial, version="0.1.0")
-        context.capabilities.provide(
-            ClashEngineToken, _BvhClashEngine(spatial), version="0.1.0"
-        )
-        context.capabilities.provide(
-            BoqLineSourceToken, _BoqLineBridge(kernel), version="0.1.0"
-        )
-        context.capabilities.provide(
-            MetricProviderToken, _MassingMetrics(kernel), version="0.1.0"
-        )
+        context.capabilities.provide(ClashEngineToken, _BvhClashEngine(spatial), version="0.1.0")
+        context.capabilities.provide(BoqLineSourceToken, _BoqLineBridge(kernel), version="0.1.0")
+        context.capabilities.provide(MetricProviderToken, _MassingMetrics(kernel), version="0.1.0")
         context.capabilities.provide(
             SceneNodeSourceToken, _MassingSceneSource(source), version="0.1.0"
         )
@@ -528,9 +524,7 @@ def filesystem_storage(path: Any) -> Any:
     from .schema.codec import record_default, record_object_hook
     from .storage import FileSystemStorageAdapter
 
-    return FileSystemStorageAdapter(
-        path, default=record_default, object_hook=record_object_hook
-    )
+    return FileSystemStorageAdapter(path, default=record_default, object_hook=record_object_hook)
 
 
 def sqlite_storage(path: Any = ":memory:") -> Any:

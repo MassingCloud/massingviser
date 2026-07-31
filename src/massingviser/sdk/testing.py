@@ -7,8 +7,8 @@ which is where plugin bugs actually live.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from ..kernel import (
     InMemoryTelemetrySink,

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import contextvars
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Mapping
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from .disposable import Disposable, to_disposable
 from .errors import KernelError
 from .permissions import Identity, PermissionRequest, PermissionService
-from .result import Err, Ok, Result, attempt_async, err, ok
+from .result import Result, attempt_async, err
 from .telemetry import NOOP_TELEMETRY, TelemetrySink
 
 
@@ -41,7 +42,7 @@ class CommandDefinition:
     #: Expressing undo as *another command* rather than as a closure keeps the history
     #: serialisable and replayable, and means undo goes through the same permission and middleware
     #: path as the original action instead of quietly bypassing it.
-    create_inverse: Callable[[Any, Any], "CommandInvocation | None"] | None = None
+    create_inverse: Callable[[Any, Any], CommandInvocation | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,9 @@ _HistoryMode = Literal["normal", "undo", "redo"]
 # silently drop its own undo entry. A ContextVar is inherited by awaits within the same task --
 # which is exactly "a command invoked from inside another command's handler" -- and copied for
 # tasks spawned elsewhere.
-_depth: contextvars.ContextVar[int] = contextvars.ContextVar("massingviser_command_depth", default=0)
+_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "massingviser_command_depth", default=0
+)
 _mode: contextvars.ContextVar[_HistoryMode] = contextvars.ContextVar(
     "massingviser_command_mode", default="normal"
 )
@@ -330,6 +333,7 @@ class CommandBus:
         next_ = core
         for middleware in reversed(self._middlewares):
             downstream = next_
+
             # Bind both per-iteration values as defaults; a bare closure would capture the loop
             # variable and every layer would run the last middleware.
             def make(mw: CommandMiddleware = middleware, nxt=downstream):

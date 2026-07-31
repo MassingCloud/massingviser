@@ -37,7 +37,7 @@ solids = ["trimesh>=4.0", "manifold3d>=2.0"]
 crs = ["pyproj>=3.6"]
 # Everything optional at once.
 all = ["ifcopenshell>=0.8.0", "trimesh>=4.0", "manifold3d>=2.0", "pyproj>=3.6"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.15"]
 
 [project.scripts]
 massingviser = "massingviser.__main__:main"
@@ -61,6 +61,10 @@ filterwarnings = [
     # pyproj's own internals, on a code path we do not choose. Not ours to fix, and not worth
     # drowning the test output over.
     "ignore:Conversion of an array with ndim > 0 to a scalar:DeprecationWarning",
+    # ifcopenshell's `file.__del__` raises KeyError when a file it failed to open is collected.
+    # Raised from a destructor in a dependency, on the path our "malformed payload is reported,
+    # not raised" test deliberately exercises. Nothing here can catch it.
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.ruff]
@@ -69,4 +73,25 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+    # The formatter owns line length; the linter flagging it too is just noise.
+    "E501",
+    # `if a: if b:` is kept nested where the outer test is a guard shared by a parallel
+    # structure -- collapsing one arm of four destroys the symmetry that makes it readable.
+    "SIM102",
+    # A chain of symmetric `if case: return True` reads better than one negated expression,
+    # and each line stays independently commentable.
+    "SIM103",
+    # `contextlib.suppress` allocates and enters a context manager. Every site here is in an
+    # event-dispatch or state-notification loop that runs per subscriber per change, and each
+    # already carries a comment saying why the exception is swallowed.
+    "SIM105",
+    # An if/else whose branches document intent (winding order, unit choice) beats a ternary
+    # that fits on one line but explains nothing.
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `pytest.importorskip("viser")` has to run *before* the viser-dependent imports, which is
+# precisely what E402 forbids. The alternative is a collection error on a viser-less install.
+"tests/test_viewer.py" = ["E402"]

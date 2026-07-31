@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Generic, Mapping, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from .errors import KernelError
-from .result import Err, Ok, Result, attempt_async, err, ok
+from .result import Result, attempt_async, err, ok
 from .telemetry import NOOP_TELEMETRY, TelemetrySink
 
 T = TypeVar("T")
@@ -82,7 +83,7 @@ class VersionedDocument(Generic[T]):
         }
 
     @staticmethod
-    def from_mapping(value: Mapping[str, Any]) -> "VersionedDocument[Any]":
+    def from_mapping(value: Mapping[str, Any]) -> VersionedDocument[Any]:
         return VersionedDocument(
             schema=value["schema"],
             version=value["version"],
@@ -119,7 +120,7 @@ class DocumentMigrator(Protocol):
     def latest_version(self, schema: str) -> int | None: ...
     def migrate(
         self, document: VersionedDocument[Any]
-    ) -> "Result[VersionedDocument[Any], KernelError]": ...
+    ) -> Result[VersionedDocument[Any], KernelError]: ...
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,9 @@ class PersistenceEngine:
             )
         return self._apply_migration(_as_document(read.value), key)
 
-    async def migrate_in_place(self, key: str) -> Result[VersionedDocument[Any] | None, KernelError]:
+    async def migrate_in_place(
+        self, key: str
+    ) -> Result[VersionedDocument[Any] | None, KernelError]:
         """Migrate the stored value and write it back, snapshotting the original first."""
         current = await self.load(key)
         if not current.ok:
@@ -329,7 +332,7 @@ class PersistenceEngine:
         self._telemetry.counter("persistence.rollback", 1)
         return ok(_as_document(value) if is_versioned_document(value) else None)
 
-    def namespaced(self, prefix: str) -> "NamespacedPersistence":
+    def namespaced(self, prefix: str) -> NamespacedPersistence:
         """A view whose keys are transparently prefixed. Sandboxes each plugin's stored data."""
         return NamespacedPersistence(self, prefix)
 

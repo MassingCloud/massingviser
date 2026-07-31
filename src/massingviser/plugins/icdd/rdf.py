@@ -19,8 +19,9 @@ Turtle and JSON-LD are out of scope, which is stated rather than discovered.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
+from typing import Any
 from xml.etree import ElementTree
 
 from .ontology import DEFAULT_PREFIXES, NS
@@ -75,7 +76,9 @@ class Graph:
         self.add(subject, predicate, Literal(str(value)))
 
     def objects(self, subject: str, predicate: str) -> list[Any]:
-        return [t.object for t in self._triples if t.subject == subject and t.predicate == predicate]
+        return [
+            t.object for t in self._triples if t.subject == subject and t.predicate == predicate
+        ]
 
     def value(self, subject: str, predicate: str) -> Any | None:
         found = self.objects(subject, predicate)
@@ -220,9 +223,7 @@ def parse(source: str | bytes) -> Graph:
 
         for child in node:
             if rdf_parse_type in child.attrib:
-                raise RdfError(
-                    f'rdf:parseType="{child.attrib[rdf_parse_type]}" is not supported.'
-                )
+                raise RdfError(f'rdf:parseType="{child.attrib[rdf_parse_type]}" is not supported.')
             predicate = expand(child.tag)
             resource = child.attrib.get(rdf_resource)
             if resource is not None:

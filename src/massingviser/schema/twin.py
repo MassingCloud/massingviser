@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from .common import ElementRef, Id, IsoTimestamp, Provenance
 from .geo import DatasetPurpose, Extent, GeoReference, RealityDerivatives

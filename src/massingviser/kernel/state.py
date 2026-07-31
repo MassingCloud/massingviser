@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Mapping, TypeVar
+from typing import Any, Generic, TypeVar
 
 from .disposable import Disposable, to_disposable
 from .errors import KernelError
@@ -62,7 +63,7 @@ class Slice(Generic[T]):
 
     __slots__ = ("namespace", "_store", "_record")
 
-    def __init__(self, namespace: str, store: "StateStore", record: _SliceRecord) -> None:
+    def __init__(self, namespace: str, store: StateStore, record: _SliceRecord) -> None:
         self.namespace = namespace
         self._store = store
         self._record = record
@@ -138,7 +139,7 @@ class StateStore:
     def has_slice(self, namespace: str) -> bool:
         return namespace in self._slices
 
-    def get_slice(self, namespace: str) -> "Slice[Any] | None":
+    def get_slice(self, namespace: str) -> Slice[Any] | None:
         record = self._slices.get(namespace)
         return Slice(namespace, self, record) if record else None
 

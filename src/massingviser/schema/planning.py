@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from .common import ElementRef, Id, IsoTimestamp
 
-TaskConstraint = Literal[
-    "asap", "start-no-earlier-than", "finish-no-later-than", "must-start-on"
-]
+TaskConstraint = Literal["asap", "start-no-earlier-than", "finish-no-later-than", "must-start-on"]
 
 
 @dataclass(frozen=True)

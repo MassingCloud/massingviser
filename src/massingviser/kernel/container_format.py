@@ -16,9 +16,10 @@ comes next -- and the kernel never learns what any of them contain.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .disposable import Disposable, to_disposable
 from .errors import KernelError
@@ -29,7 +30,7 @@ from .persistence import (
     VersionedDocument,
     is_versioned_document,
 )
-from .result import Err, Ok, Result, attempt_async, err, ok
+from .result import Result, attempt_async, err, ok
 from .telemetry import NOOP_TELEMETRY, TelemetrySink
 
 ContainerEntryKind = Literal["document", "blob"]
@@ -110,7 +111,9 @@ class OpenContainer(Protocol):
     def entries(self, kind: ContainerEntryKind | None = None) -> tuple[ContainerEntry, ...]: ...
     def has(self, path: str) -> bool: ...
     async def read_document(self, path: str) -> Result[Any, KernelError]: ...
-    async def write_document(self, path: str, schema: str, data: Any) -> Result[Any, KernelError]: ...
+    async def write_document(
+        self, path: str, schema: str, data: Any
+    ) -> Result[Any, KernelError]: ...
     async def read_blob(self, path: str) -> Result[Any, KernelError]: ...
     async def write_blob(
         self, path: str, data: bytes, media_type: str | None = None
@@ -161,7 +164,15 @@ class ContainerService:
     architecture exists to prevent.
     """
 
-    __slots__ = ("_adapters", "_events", "_telemetry", "_migrator", "_now", "_active", "_active_adapter")
+    __slots__ = (
+        "_adapters",
+        "_events",
+        "_telemetry",
+        "_migrator",
+        "_now",
+        "_active",
+        "_active_adapter",
+    )
 
     def __init__(
         self,
@@ -322,9 +333,7 @@ class ContainerService:
             self._events.emit("container.closed", {"manifest": manifest})
         return ok(None)
 
-    def _adopt(
-        self, container: OpenContainer, adapter: ContainerAdapter, reason: str
-    ) -> None:
+    def _adopt(self, container: OpenContainer, adapter: ContainerAdapter, reason: str) -> None:
         self._active = container
         self._active_adapter = adapter
         self._telemetry.counter(f"container.{reason}", 1, {"formatId": adapter.format_id})

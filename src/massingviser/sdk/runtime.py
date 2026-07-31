@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable

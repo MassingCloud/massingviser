@@ -7,7 +7,8 @@ deployment has somewhere for it to go other than a terminal nobody is reading.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping, Protocol, runtime_checkable
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .errors import to_kernel_error
 from .telemetry import TelemetrySink

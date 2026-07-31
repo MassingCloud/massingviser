@@ -8,8 +8,9 @@ safe to replace with the no-op.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .disposable import Disposable, to_disposable
 from .errors import KernelError

@@ -10,16 +10,15 @@ comparing two 400,000-element models is instant rather than a tree walk.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from ..kernel import KernelError, Result, StorageAdapter, err, ok
 from .objects import (
-    ID_LENGTH,
     SerialisedObject,
     VcsError,
-    canonical_json,
     compute_id,
     deserialise,
     serialise,
@@ -190,9 +189,7 @@ class ObjectStore:
         """Ids whose content no longer hashes to them. Empty means the subtree is intact."""
         objects = await self.collect(root_id)
         return tuple(
-            object_id
-            for object_id, payload in objects.items()
-            if not verify(object_id, payload)
+            object_id for object_id, payload in objects.items() if not verify(object_id, payload)
         )
 
 
@@ -283,9 +280,7 @@ class Repository:
         forty-storey tower writes that storey and the handful of parents above it -- everything
         else is already there under the same id.
         """
-        root, produced = serialise(
-            value, **({"chunk_size": chunk_size} if chunk_size else {})
-        )
+        root, produced = serialise(value, **({"chunk_size": chunk_size} if chunk_size else {}))
         await self.objects.put_many(produced.values())
 
         if parents is None:
@@ -537,9 +532,7 @@ def _merge_trees(
             )
             continue
 
-        child, child_conflicts = _merge_trees(
-            base_value, ours[key], theirs[key], path=child_path
-        )
+        child, child_conflicts = _merge_trees(base_value, ours[key], theirs[key], path=child_path)
         merged[key] = child
         conflicts.extend(child_conflicts)
 

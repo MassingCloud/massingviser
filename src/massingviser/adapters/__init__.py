@@ -18,7 +18,8 @@ families that consume what they produce.
 from __future__ import annotations
 
 import importlib
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 #: Adapter name -> the extras that have to be installed for it.
 REQUIREMENTS: Mapping[str, tuple[str, ...]] = {

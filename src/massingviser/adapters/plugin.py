@@ -12,9 +12,10 @@ and the geometry layer gets a spatial index. One import, six capabilities, no pl
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
-from ..kernel import CommandDefinition, PluginContext, UIContribution
+from ..kernel import CommandDefinition, PluginContext
 from ..sdk import define_plugin
 from . import REQUIREMENTS, available, load, missing
 
@@ -79,9 +80,7 @@ def create_adapters_plugin() -> Any:
             return {"available": available(), "missing": missing(), "requires": dict(REQUIREMENTS)}
 
         context.commands.register(
-            CommandDefinition(
-                id=ADAPTER_COMMANDS.status, title="Adapter status", handler=status
-            )
+            CommandDefinition(id=ADAPTER_COMMANDS.status, title="Adapter status", handler=status)
         )
 
         context.logger.info(
@@ -144,8 +143,7 @@ def _publish_model(context: PluginContext, ifc_module: Any, model: Any, model_id
         # Grouped by storey, so a clash run compares floors rather than every element against
         # every other -- which for one model is mostly its own structure meeting itself.
         groups = {
-            element.global_id: element.storey_global_id or model_id
-            for element in model.elements
+            element.global_id: element.storey_global_id or model_id for element in model.elements
         }
         context.capabilities.provide(
             ClashEngineToken,

@@ -7,7 +7,6 @@ import pytest
 from massingviser.plugins.estimating import (
     ESTIMATING_COMMANDS,
     BoqToken,
-    CashflowForecastToken,
     EstimateToken,
     ModelElementSourceToken,
     QuantityTakeoffToken,
@@ -21,16 +20,13 @@ from massingviser.plugins.estimating import (
     sum_money,
 )
 from massingviser.plugins.markup import (
-    ISSUE_TRANSITIONS,
     MARKUP_COMMANDS,
     AnchorToken,
     ElementResolverToken,
     IssueToken,
-    MarkupToken,
     markup_plugin,
 )
-from massingviser.schema import ElementRef, Money
-
+from massingviser.schema import Money
 
 # ---------------------------------------------------------------------------------------------
 # Money
@@ -178,7 +174,12 @@ async def test_issue_state_machine(harness, start, target, legal):
     issue = (await issues.create(title="I")).value
 
     # Walk to the starting state through legal moves.
-    path = {"open": [], "in-review": ["in-review"], "resolved": ["resolved"], "closed": ["resolved", "closed"]}
+    path = {
+        "open": [],
+        "in-review": ["in-review"],
+        "resolved": ["resolved"],
+        "closed": ["resolved", "closed"],
+    }
     for step in path[start]:
         assert (await issues.transition(issue.id, step)).ok
 
@@ -251,7 +252,13 @@ async def _priced(harness, rate_minor: int = 42_000, contingency: float = 10.0):
     )
     await harness.execute(
         ESTIMATING_COMMANDS.add_resource,
-        {"id": "res", "name": "Concrete", "type": "material", "unit": "m3", "rate": Money(rate_minor, "GBP")},
+        {
+            "id": "res",
+            "name": "Concrete",
+            "type": "material",
+            "unit": "m3",
+            "rate": Money(rate_minor, "GBP"),
+        },
     )
     await harness.execute(
         ESTIMATING_COMMANDS.add_assembly,
@@ -266,7 +273,9 @@ async def _priced(harness, rate_minor: int = 42_000, contingency: float = 10.0):
         },
     )
     await harness.execute(ESTIMATING_COMMANDS.run_takeoff, {})
-    boq = (await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})).value
+    boq = (
+        await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})
+    ).value
     await harness.execute(
         ESTIMATING_COMMANDS.generate_boq,
         {"boq_id": boq.id, "assembly_by_code": {"SUB-STRUCTURE": "asm"}},
@@ -303,7 +312,13 @@ async def test_a_rule_matching_nothing_is_reported_not_swallowed(harness):
     harness.kernel.capabilities.provide(ModelElementSourceToken, _Source())
     await harness.execute(
         ESTIMATING_COMMANDS.add_rule,
-        {"id": "r-empty", "name": "Steel", "metric": "Mass", "unit": "kg", "filter": {"ifc_class": "IfcBeam"}},
+        {
+            "id": "r-empty",
+            "name": "Steel",
+            "metric": "Mass",
+            "unit": "kg",
+            "filter": {"ifc_class": "IfcBeam"},
+        },
     )
     summary = (await harness.execute(ESTIMATING_COMMANDS.run_takeoff, {})).value
     assert summary.empty_rules == ("r-empty",)
@@ -329,7 +344,9 @@ async def test_a_priced_line_must_record_where_its_rate_came_from(harness):
     await harness.load(estimating_plugin)
     from massingviser.schema import UnitizedValue
 
-    boq = (await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})).value
+    boq = (
+        await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})
+    ).value
     result = await harness.capability(BoqToken).upsert_line(
         boq_id=boq.id,
         item_number="0001",
@@ -344,12 +361,16 @@ async def test_an_issued_estimate_is_frozen_and_revising_supersedes(harness):
     _, estimate = await _priced(harness)
     assert estimate.status == "draft"
 
-    issued = (await harness.execute(ESTIMATING_COMMANDS.issue_estimate, {"estimate_id": estimate.id})).value
+    issued = (
+        await harness.execute(ESTIMATING_COMMANDS.issue_estimate, {"estimate_id": estimate.id})
+    ).value
     assert issued.status == "issued"
     # The bill it reports is now a frozen copy, not the live one.
     assert issued.boq_id != issued.working_boq_id
 
-    refused = await harness.execute(ESTIMATING_COMMANDS.recalculate_estimate, {"estimate_id": estimate.id})
+    refused = await harness.execute(
+        ESTIMATING_COMMANDS.recalculate_estimate, {"estimate_id": estimate.id}
+    )
     assert not refused.ok and "frozen" in refused.error.message
 
     revision = (await harness.capability(EstimateToken).revise(estimate.id)).value
@@ -369,13 +390,17 @@ async def test_cashflow_sums_exactly_to_the_estimate(harness):
     ).value
     # The last period absorbs the rounding remainder, so the page adds up.
     assert forecast.periods[-1].cumulative_planned == estimate.total
-    assert sum(p.planned_spend.amount_minor for p in forecast.periods) == estimate.total.amount_minor
+    assert (
+        sum(p.planned_spend.amount_minor for p in forecast.periods) == estimate.total.amount_minor
+    )
 
 
 async def test_cashflow_without_a_schedule_refuses_rather_than_inventing_one(harness):
     await harness.load(estimating_plugin)
     harness.kernel.capabilities.provide(ModelElementSourceToken, _Source())
-    boq = (await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})).value
+    boq = (
+        await harness.execute(ESTIMATING_COMMANDS.create_boq, {"name": "B", "currency": "GBP"})
+    ).value
     from massingviser.schema import UnitizedValue
     from massingviser.schema.cost import RateSource
 
@@ -391,5 +416,7 @@ async def test_cashflow_without_a_schedule_refuses_rather_than_inventing_one(har
     estimate = (
         await harness.execute(ESTIMATING_COMMANDS.create_estimate, {"name": "E", "boq_id": boq.id})
     ).value
-    result = await harness.execute(ESTIMATING_COMMANDS.generate_cashflow, {"estimate_id": estimate.id})
+    result = await harness.execute(
+        ESTIMATING_COMMANDS.generate_cashflow, {"estimate_id": estimate.id}
+    )
     assert not result.ok and result.error.code == "CAPABILITY_NOT_FOUND"

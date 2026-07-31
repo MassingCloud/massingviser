@@ -17,8 +17,8 @@ server-side compute, and vectorising it is the entire point.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -35,12 +35,12 @@ class Aabb:
     max: tuple[float, float, float]
 
     @staticmethod
-    def of_points(points: Sequence[Sequence[float]]) -> "Aabb":
+    def of_points(points: Sequence[Sequence[float]]) -> Aabb:
         array = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         return Aabb(tuple(array.min(axis=0)), tuple(array.max(axis=0)))
 
     @staticmethod
-    def union(boxes: Iterable["Aabb"]) -> "Aabb":
+    def union(boxes: Iterable[Aabb]) -> Aabb:
         lows = np.array([box.min for box in boxes], dtype=np.float64)
         highs = np.array([box.max for box in boxes], dtype=np.float64)
         return Aabb(tuple(lows.min(axis=0)), tuple(highs.max(axis=0)))
@@ -49,13 +49,13 @@ class Aabb:
     def centre(self) -> tuple[float, float, float]:
         return tuple((np.asarray(self.min) + np.asarray(self.max)) / 2.0)
 
-    def expanded(self, margin: float) -> "Aabb":
+    def expanded(self, margin: float) -> Aabb:
         return Aabb(
             tuple(value - margin for value in self.min),
             tuple(value + margin for value in self.max),
         )
 
-    def overlaps(self, other: "Aabb", tolerance: float = 0.0) -> bool:
+    def overlaps(self, other: Aabb, tolerance: float = 0.0) -> bool:
         for axis in range(3):
             if self.min[axis] - tolerance > other.max[axis]:
                 return False
@@ -63,7 +63,7 @@ class Aabb:
                 return False
         return True
 
-    def penetration(self, other: "Aabb") -> float:
+    def penetration(self, other: Aabb) -> float:
         """Depth of the overlap along its shallowest axis; negative when separated.
 
         The shallowest axis is the right one: it is the distance you would have to move the two
@@ -80,8 +80,8 @@ class _Node:
     box: Aabb
     start: int = 0
     count: int = 0
-    left: "_Node | None" = None
-    right: "_Node | None" = None
+    left: _Node | None = None
+    right: _Node | None = None
 
     @property
     def is_leaf(self) -> bool:
@@ -111,7 +111,7 @@ class Bvh:
         return len(self._boxes)
 
     @staticmethod
-    def of_meshes(meshes: "dict[str, Sequence[Sequence[float]]]") -> "Bvh":
+    def of_meshes(meshes: dict[str, Sequence[Sequence[float]]]) -> Bvh:
         """Build from vertex arrays, one per label."""
         labels = list(meshes)
         return Bvh(labels, [Aabb.of_points(meshes[label]) for label in labels])
@@ -120,9 +120,7 @@ class Bvh:
 
     def _bounds(self, start: int, end: int) -> Aabb:
         indices = self._order[start:end]
-        return Aabb(
-            tuple(self._lows[indices].min(axis=0)), tuple(self._highs[indices].max(axis=0))
-        )
+        return Aabb(tuple(self._lows[indices].min(axis=0)), tuple(self._highs[indices].max(axis=0)))
 
     def _build(self, start: int, end: int) -> _Node:
         box = self._bounds(start, end)
@@ -135,7 +133,9 @@ class Bvh:
         if extent[axis] <= 0:
             return node  # every element sits at the same place; splitting achieves nothing
 
-        centres = (self._lows[self._order[start:end], axis] + self._highs[self._order[start:end], axis]) / 2.0
+        centres = (
+            self._lows[self._order[start:end], axis] + self._highs[self._order[start:end], axis]
+        ) / 2.0
         middle = start + (end - start) // 2
         # Partial sort: only the median position has to be correct, not the whole slice.
         local = np.argsort(centres, kind="stable")
@@ -155,7 +155,7 @@ class Bvh:
         return tuple(found)
 
     def _descend_box(
-        self, node: "_Node | None", box: Aabb, tolerance: float, found: list[str]
+        self, node: _Node | None, box: Aabb, tolerance: float, found: list[str]
     ) -> None:
         if node is None or not node.box.overlaps(box, tolerance):
             return
@@ -207,7 +207,7 @@ class Bvh:
 
     def _descend_ray(
         self,
-        node: "_Node | None",
+        node: _Node | None,
         origin: np.ndarray,
         inverse: np.ndarray,
         max_distance: float,
@@ -247,7 +247,7 @@ class Bvh:
         positive = np.where(normals > 0, high, low)
         return bool(np.any((positive * normals).sum(axis=1) + planes[:, 3] < 0))
 
-    def _descend_frustum(self, node: "_Node | None", planes: np.ndarray, found: list[str]) -> None:
+    def _descend_frustum(self, node: _Node | None, planes: np.ndarray, found: list[str]) -> None:
         if node is None or self._outside(node.box, planes):
             return
         if node.is_leaf:
@@ -259,7 +259,7 @@ class Bvh:
         self._descend_frustum(node.right, planes, found)
 
     def overlapping_pairs(
-        self, other: "Bvh", *, tolerance: float = 0.0
+        self, other: Bvh, *, tolerance: float = 0.0
     ) -> tuple[tuple[str, str, float], ...]:
         """Broad-phase clash between two sets, as ``(left, right, penetration)``.
 
@@ -276,7 +276,7 @@ class Bvh:
     def _descend_pairs(
         self,
         left: _Node,
-        other: "Bvh",
+        other: Bvh,
         right: _Node,
         tolerance: float,
         pairs: list[tuple[str, str, float]],

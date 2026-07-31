@@ -8,8 +8,9 @@ the rule that produced them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (
@@ -93,7 +94,11 @@ class ReresolveSummary:
 @runtime_checkable
 class TaskModelLinkService(Protocol):
     async def link(
-        self, task_id: Id, elements: Sequence[ElementRef], behaviour: TaskLinkBehaviour, **options: Any
+        self,
+        task_id: Id,
+        elements: Sequence[ElementRef],
+        behaviour: TaskLinkBehaviour,
+        **options: Any,
     ) -> Result[TaskModelLinkRecord, KernelError]: ...
     async def link_by_rule(
         self,
@@ -105,9 +110,13 @@ class TaskModelLinkService(Protocol):
     ) -> Result[TaskModelLinkRecord, KernelError]: ...
     async def unlink(self, link_id: Id) -> Result[None, KernelError]: ...
     def links(self, task_id: Id | None = None) -> tuple[TaskModelLinkRecord, ...]: ...
-    async def reresolve(self, model_id: Id | None = None) -> Result[ReresolveSummary, KernelError]: ...
+    async def reresolve(
+        self, model_id: Id | None = None
+    ) -> Result[ReresolveSummary, KernelError]: ...
     #: Elements no task claims. The 4D equivalent of an unpriced line, and just as expensive.
-    async def unlinked_elements(self, model_id: Id) -> Result[tuple[ElementRef, ...], KernelError]: ...
+    async def unlinked_elements(
+        self, model_id: Id
+    ) -> Result[tuple[ElementRef, ...], KernelError]: ...
 
 
 TaskModelLinkToken: CapabilityToken[TaskModelLinkService] = create_capability_token(

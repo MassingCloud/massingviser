@@ -212,7 +212,6 @@ def test_no_capability_plugin_imports_another():
         siblings = families - {family}
         for path in (plugins / family).rglob("*.py"):
             # Inside `plugins/<family>/`, a level-2 relative import resolves to a sibling family.
-            parts = path.relative_to(ROOT).parts
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             leaked: set[str] = set()
             for node in ast.walk(tree):

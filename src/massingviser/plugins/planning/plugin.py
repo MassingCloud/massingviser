@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ...kernel import CommandDefinition, PluginContext, UIContribution
 from ...schema import ElementRef
@@ -97,9 +98,7 @@ def create_planning_plugin(*, clock: Clock | None = None, ids: IdFactory | None 
             return _unwrap(await playback.seek(params["at"]))
 
         async def compare(params: Mapping[str, Any], _ctx: Any) -> Any:
-            return _unwrap(
-                await progress.compare(params["data_date"], params.get("task_ids"))
-            )
+            return _unwrap(await progress.compare(params["data_date"], params.get("task_ids")))
 
         for command in (
             CommandDefinition(

@@ -8,8 +8,9 @@ to change, codes are part of the kernel's contract and are not.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 KernelErrorCode = Literal[
     "SERVICE_NOT_FOUND",

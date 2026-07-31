@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from .common import ElementRef, Id, IsoTimestamp, Money
 
-PackageStatus = Literal[
-    "draft", "issued", "tendering", "awarded", "in-progress", "complete"
-]
+PackageStatus = Literal["draft", "issued", "tendering", "awarded", "in-progress", "complete"]
 
 
 @dataclass(frozen=True)
@@ -50,9 +48,7 @@ class VendorScopeRecord:
     submitted_at: IsoTimestamp | None = None
 
 
-FieldState = Literal[
-    "not-started", "in-progress", "installed", "inspected", "accepted", "rework"
-]
+FieldState = Literal["not-started", "in-progress", "installed", "inspected", "accepted", "rework"]
 
 
 @dataclass(frozen=True)

@@ -20,8 +20,7 @@ import json
 import os
 import re
 import uuid
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 #: Characters kept verbatim. Everything else is percent-encoded, so the mapping is total.
 _SAFE = re.compile(r"[A-Za-z0-9._-]")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol, runtime_checkable
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import (
     CapabilityToken,
@@ -8,18 +9,16 @@ from ...kernel import (
     KernelError,
     PluginContext,
     Result,
-    UIContribution,
     create_capability_token,
     err,
     ok,
 )
-from ...sdk import Clock, IdFactory, SequentialIdFactory, SystemClock, define_plugin
+from ...sdk import Clock, IdFactory, define_plugin
 from .container import (
     Container,
     ContainerArchive,
     MemoryArchive,
     ValidationReport,
-    invert_link,
     validate_container,
     write_container,
 )
@@ -30,7 +29,9 @@ PLUGIN_VERSION = "0.1.0"
 
 @runtime_checkable
 class IcddService(Protocol):
-    def write(self, archive: ContainerArchive, container: Container) -> Result[None, KernelError]: ...
+    def write(
+        self, archive: ContainerArchive, container: Container
+    ) -> Result[None, KernelError]: ...
     def validate(self, archive: ContainerArchive, container: Container) -> ValidationReport: ...
 
 

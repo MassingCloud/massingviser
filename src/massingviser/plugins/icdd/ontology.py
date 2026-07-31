@@ -9,9 +9,10 @@ zip file that looks like one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Literal
 
 
 class NS:
@@ -192,9 +193,7 @@ LINK_TYPES: Mapping[str, LinkTypeDescriptor] = MappingProxyType(
 
 
 def link_type_by_iri(iri: str) -> LinkTypeDescriptor | None:
-    return next(
-        (descriptor for descriptor in LINK_TYPES.values() if descriptor.iri == iri), None
-    )
+    return next((descriptor for descriptor in LINK_TYPES.values() if descriptor.iri == iri), None)
 
 
 class CONTAINER_LAYOUT:

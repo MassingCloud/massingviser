@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -272,7 +273,9 @@ class StoryServiceImpl:
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             return err(
                 KernelError(
-                    "COMMAND_FAILED", "Story count must be a non-negative integer.", {"count": count}
+                    "COMMAND_FAILED",
+                    "Story count must be a non-negative integer.",
+                    {"count": count},
                 )
             )
         mass = self._require_mass(massing_object_id)
@@ -311,11 +314,12 @@ class StoryServiceImpl:
             return err(applied.error)
 
         story = self._stores.stories.find(
-            lambda candidate: candidate.massing_object_id == massing_object_id
-            and candidate.index == story_index
+            lambda candidate: (
+                candidate.massing_object_id == massing_object_id and candidate.index == story_index
+            )
         )
-        return ok(story) if story else err(
-            _not_found("story", f"{massing_object_id}#{story_index}")
+        return (
+            ok(story) if story else err(_not_found("story", f"{massing_object_id}#{story_index}"))
         )
 
     async def edit_stories(
@@ -534,9 +538,7 @@ class MassingServiceImpl:
         )
         self._stores.stories.add_many(
             [
-                replace(
-                    story, id=self._runtime.ids.next("story"), massing_object_id=copy.id
-                )
+                replace(story, id=self._runtime.ids.next("story"), massing_object_id=copy.id)
                 for story in source_stories
             ]
         )
@@ -633,9 +635,7 @@ class MetricsServiceImpl:
         outer, holes = base
 
         stories = sorted(
-            self._stores.stories.query(
-                lambda story: story.massing_object_id == massing_object_id
-            ),
+            self._stores.stories.query(lambda story: story.massing_object_id == massing_object_id),
             key=lambda story: story.index,
         )
 
@@ -686,9 +686,7 @@ class MetricsServiceImpl:
                 "volume": result.volume,
             },
         )
-        self._runtime.context.events.emit(
-            MASSING_EVENTS.metrics_computed, {"metrics": metrics}
-        )
+        self._runtime.context.events.emit(MASSING_EVENTS.metrics_computed, {"metrics": metrics})
         return ok(metrics)
 
     async def compute(self, massing_object_id: Id) -> Result[MassingMetrics, KernelError]:
@@ -736,9 +734,7 @@ class MetricsServiceImpl:
         tallest = max(
             (
                 mass.total_height
-                for mass in (
-                    self._stores.masses.get(id) for id in option.massing_object_ids
-                )
+                for mass in (self._stores.masses.get(id) for id in option.massing_object_ids)
                 if mass is not None
             ),
             default=0.0,
@@ -875,9 +871,7 @@ class ContextServiceImpl:
             return err(_not_found("massing object", massing_object_id))
 
         stories = sorted(
-            self._stores.stories.query(
-                lambda story: story.massing_object_id == massing_object_id
-            ),
+            self._stores.stories.query(lambda story: story.massing_object_id == massing_object_id),
             key=lambda story: story.index,
         )
         if not stories:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from .errors import KernelError
-from .result import Err, Ok, Result, err, ok
+from .result import Result, err, ok
 from .result import resolve as _resolve
 
 

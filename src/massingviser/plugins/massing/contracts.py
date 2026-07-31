@@ -9,8 +9,9 @@ question the tool exists to answer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...kernel import CapabilityToken, KernelError, Result, create_capability_token
 from ...schema import (
@@ -118,9 +119,7 @@ StoryToken: CapabilityToken[StoryService] = create_capability_token("massing.sto
 
 @runtime_checkable
 class AppearanceService(Protocol):
-    async def set_color(
-        self, massing_object_id: Id, color: str
-    ) -> Result[None, KernelError]: ...
+    async def set_color(self, massing_object_id: Id, color: str) -> Result[None, KernelError]: ...
     async def set_opacity(
         self, massing_object_id: Id, opacity: float
     ) -> Result[None, KernelError]: ...

@@ -56,7 +56,7 @@ from .kernel import (
     TelemetryToken,
     create_kernel,
 )
-from .logging import LogLevel, Logger, create_logger
+from .logging import Logger, LogLevel, create_logger
 from .permissions import (
     ALLOW_ALL,
     ANONYMOUS_IDENTITY,

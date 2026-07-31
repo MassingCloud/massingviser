@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -105,9 +106,7 @@ class PackageServiceImpl:
             lead_time_days=pkg.get("lead_time_days"),
         )
         self._stores.packages.add(record)
-        self._runtime.context.events.emit(
-            PROCUREMENT_EVENTS.package_created, {"record": record}
-        )
+        self._runtime.context.events.emit(PROCUREMENT_EVENTS.package_created, {"record": record})
         return ok(record)
 
     async def update(
@@ -192,8 +191,10 @@ class PackageServiceImpl:
         status = filter.get("status")
         vendor_id = filter.get("vendor_id")
         return self._stores.packages.query(
-            lambda p: (status is None or p.status == status)
-            and (vendor_id is None or p.vendor_id == vendor_id)
+            lambda p: (
+                (status is None or p.status == status)
+                and (vendor_id is None or p.vendor_id == vendor_id)
+            )
         )
 
     def get(self, package_id: Id) -> ProcurementPackageRecord | None:
@@ -331,9 +332,7 @@ class VendorScopeServiceImpl:
 
         # Unpriced bids sort last rather than first, which is what a naive ascending sort on None
         # would do.
-        comparisons.sort(
-            key=lambda c: (c.quoted is None, c.quoted.amount_minor if c.quoted else 0)
-        )
+        comparisons.sort(key=lambda c: (c.quoted is None, c.quoted.amount_minor if c.quoted else 0))
         return ok(tuple(comparisons))
 
     async def award(
@@ -397,8 +396,7 @@ class FieldStatusServiceImpl:
             element=element,
             state=status["state"],
             observed_at=status.get("observed_at") or self._runtime.clock.iso(),
-            observed_by=status.get("observed_by")
-            or self._runtime.context.permissions.identity.id,
+            observed_by=status.get("observed_by") or self._runtime.context.permissions.identity.id,
             package_id=status.get("package_id"),
             task_id=status.get("task_id"),
             quantity_installed=status.get("quantity_installed"),
@@ -414,9 +412,7 @@ class FieldStatusServiceImpl:
         )
         return ok(record)
 
-    async def record_many(
-        self, statuses: Sequence[Mapping[str, Any]]
-    ) -> Result[int, KernelError]:
+    async def record_many(self, statuses: Sequence[Mapping[str, Any]]) -> Result[int, KernelError]:
         count = 0
         for status in statuses:
             result = await self.record(**dict(status))
@@ -448,9 +444,11 @@ class FieldStatusServiceImpl:
         latest_only = filter.get("latest_only", True)
 
         records = self._stores.statuses.query(
-            lambda r: (package_id is None or r.package_id == package_id)
-            and (state is None or r.state == state)
-            and (task_id is None or r.task_id == task_id)
+            lambda r: (
+                (package_id is None or r.package_id == package_id)
+                and (state is None or r.state == state)
+                and (task_id is None or r.task_id == task_id)
+            )
         )
         if not latest_only:
             return records
@@ -565,8 +563,10 @@ class InspectionServiceImpl:
         package_id = filter.get("package_id")
         outcome = filter.get("outcome")
         return self._stores.inspections.query(
-            lambda i: (package_id is None or i.package_id == package_id)
-            and (outcome is None or i.outcome == outcome)
+            lambda i: (
+                (package_id is None or i.package_id == package_id)
+                and (outcome is None or i.outcome == outcome)
+            )
         )
 
 
@@ -636,9 +636,7 @@ class InstallProgressServiceImpl:
             lambda p: p.package_id == package_id and p.data_date == data_date
         )
         self._stores.progress.add(record)
-        self._runtime.context.events.emit(
-            PROCUREMENT_EVENTS.progress_computed, {"record": record}
-        )
+        self._runtime.context.events.emit(PROCUREMENT_EVENTS.progress_computed, {"record": record})
         return ok(record)
 
     def history(self, package_id: Id) -> tuple[InstallProgressRecord, ...]:

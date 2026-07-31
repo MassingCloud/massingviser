@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from .capabilities import CapabilityRegistry
 from .commands import CommandBus
 from .container import ServiceContainer, ServiceToken, create_service_token
 from .container_format import ContainerService, StorageContainerAdapter
-from .events import EventBus
 from .errors import KernelError
+from .events import EventBus
 from .logging import Logger, create_logger
 from .permissions import ALLOW_ALL, Identity, PermissionEvaluator, PermissionService
 from .persistence import DocumentMigrator, MemoryStorageAdapter, PersistenceEngine, StorageAdapter
@@ -31,7 +32,9 @@ KERNEL_API_VERSION = "1.0.0"
 EventBusToken: ServiceToken[EventBus] = create_service_token("kernel.events")
 CommandBusToken: ServiceToken[CommandBus] = create_service_token("kernel.commands")
 StateStoreToken: ServiceToken[StateStore] = create_service_token("kernel.state")
-CapabilityRegistryToken: ServiceToken[CapabilityRegistry] = create_service_token("kernel.capabilities")
+CapabilityRegistryToken: ServiceToken[CapabilityRegistry] = create_service_token(
+    "kernel.capabilities"
+)
 PersistenceToken: ServiceToken[PersistenceEngine] = create_service_token("kernel.persistence")
 PermissionsToken: ServiceToken[PermissionService] = create_service_token("kernel.permissions")
 TelemetryToken: ServiceToken[TelemetrySink] = create_service_token("kernel.telemetry")

@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from massingviser.plugins.coordination import (
-    COORDINATION_COMMANDS,
     ClashEngineToken,
     ClashToken,
     IssueRoutingToken,
@@ -27,27 +26,25 @@ from massingviser.plugins.coordination import (
 )
 from massingviser.plugins.markup import IssueToken, markup_plugin
 from massingviser.plugins.planning import (
-    PLANNING_COMMANDS,
     ElementFilterSourceToken,
     PlannedActualToken,
     ScheduleImportToken,
     TaskModelLinkToken,
     TimelinePlaybackToken,
-    planning_plugin,
     parse_timestamp,
+    planning_plugin,
 )
 from massingviser.plugins.procurement import (
+    BoqLineSourceToken,
     FieldStatusToken,
     InspectionToken,
     InstallProgressToken,
     PackageBoqLine,
     PackageToken,
-    BoqLineSourceToken,
     VendorScopeToken,
     procurement_plugin,
 )
 from massingviser.schema import ElementRef, Money, ValidationRuleRecord
-
 
 # ---------------------------------------------------------------------------------------------
 # Coordination
@@ -455,7 +452,7 @@ class _Bill:
     )
 
     def lines(self, line_ids=None):
-        return [l for l in self.LINES if line_ids is None or l.id in set(line_ids)]
+        return [line for line in self.LINES if line_ids is None or line.id in set(line_ids)]
 
 
 @pytest.fixture()
@@ -599,7 +596,9 @@ async def test_earned_value_follows_elements_in_place(harness):
     for element in refs[:6]:
         await field.record(element=element, state="installed", package_id=package.id)
 
-    record = (await harness.capability(InstallProgressToken).compute(package.id, "2026-06-01")).value
+    record = (
+        await harness.capability(InstallProgressToken).compute(package.id, "2026-06-01")
+    ).value
     assert record.percent_complete == pytest.approx(0.6)
     assert record.earned_value == Money(600_000, "GBP")
 

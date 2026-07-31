@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ...kernel import CommandDefinition, PluginContext, UIContribution
 from ...sdk import Clock, IdFactory, SequentialIdFactory, SystemClock, define_plugin
@@ -33,9 +34,7 @@ def _unwrap(result: Any) -> Any:
     return result.value
 
 
-def create_procurement_plugin(
-    *, clock: Clock | None = None, ids: IdFactory | None = None
-) -> Any:
+def create_procurement_plugin(*, clock: Clock | None = None, ids: IdFactory | None = None) -> Any:
     """Procurement and field, packaged as a plugin."""
     resolved_clock = clock or SystemClock()
     resolved_ids = ids or SequentialIdFactory()
@@ -78,9 +77,7 @@ def create_procurement_plugin(
             return _unwrap(await inspections.create(**dict(params)))
 
         async def compute_progress(params: Mapping[str, Any], _ctx: Any) -> Any:
-            return _unwrap(
-                await progress.compute(params["package_id"], params["data_date"])
-            )
+            return _unwrap(await progress.compute(params["package_id"], params["data_date"]))
 
         for command in (
             CommandDefinition(

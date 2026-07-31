@@ -7,15 +7,15 @@ a different shell could render the same records to a desktop viewport or an engi
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
 from ..plugins.massing import (
     ContextToken,
     MassingToken,
-    MetricsToken,
     ProfileToken,
     StoryToken,
     extrude_stories,

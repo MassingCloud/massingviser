@@ -8,7 +8,8 @@ host to hold a single store it can drain.
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, TypeVar, runtime_checkable
+from collections.abc import Callable
+from typing import Protocol, TypeVar, runtime_checkable
 
 
 @runtime_checkable
@@ -108,7 +109,7 @@ class DisposableStore:
         self._items = []
         return errors
 
-    def __enter__(self) -> "DisposableStore":
+    def __enter__(self) -> DisposableStore:
         return self
 
     def __exit__(self, *_exc: object) -> None:

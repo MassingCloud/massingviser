@@ -13,7 +13,6 @@ from massingviser.kernel import (
     CommandInvocation,
     DisposableStore,
     EventBus,
-    InMemoryTelemetrySink,
     KernelError,
     MemoryStorageAdapter,
     PermissionRequest,
@@ -30,7 +29,6 @@ from massingviser.kernel import (
 from massingviser.kernel.permissions import Identity, PermissionService
 from massingviser.schema import MigrationDefinition, MigrationRegistry
 from massingviser.sdk import define_plugin
-
 
 # ---------------------------------------------------------------------------------------------
 # Disposables

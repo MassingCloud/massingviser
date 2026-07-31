@@ -29,18 +29,31 @@ What makes it a BIM contract rather than a mesh dump:
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from ...kernel import KernelError, Result, err, ok
 
 #: Column-major, translation at indices 12, 13, 14.
 IDENTITY_TRANSFORM: tuple[float, ...] = (
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.0, 0.0, 0.0, 1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
 )
 
 PayloadRole = Literal["geometry", "texture", "metadata", "reality"]
@@ -272,9 +285,7 @@ class SceneQuery:
         )
 
     def children_of(self, global_id: str) -> tuple[SceneNode, ...]:
-        return tuple(
-            node for node in self._package.nodes if node.parent_global_id == global_id
-        )
+        return tuple(node for node in self._package.nodes if node.parent_global_id == global_id)
 
     def related(self, global_id: str, relationship: str | None = None) -> tuple[SceneNode, ...]:
         node = self.by_global_id(global_id)
@@ -312,9 +323,7 @@ def to_manifest(package: ScenePackage) -> dict[str, Any]:
                 "parentGlobalId": node.parent_global_id,
                 "levelGlobalId": node.level_global_id,
                 "transform": list(node.transform),
-                "propertySets": {
-                    name: dict(values) for name, values in node.property_sets.items()
-                },
+                "propertySets": {name: dict(values) for name, values in node.property_sets.items()},
                 "relationships": [
                     {"type": edge.type, "toGlobalId": edge.to_global_id}
                     for edge in node.relationships

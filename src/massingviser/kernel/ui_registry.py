@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Generic, Mapping, TypeVar
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 from .disposable import Disposable, to_disposable
 
@@ -42,7 +43,7 @@ class UIContribution:
     #: Visibility predicate evaluated against host-supplied context.
     when: Callable[[Mapping[str, Any]], bool] | None = None
     #: Attach to a host-provided surface, returning a teardown for the host to call.
-    mount: Callable[[UIMountContext[Any]], "Disposable | None"] | None = None
+    mount: Callable[[UIMountContext[Any]], Disposable | None] | None = None
     plugin_id: str | None = None
 
     def __hash__(self) -> int:
@@ -84,7 +85,9 @@ class UIExtensionRegistry(Generic[THost]):
 
         return to_disposable(_remove)
 
-    def register_all(self, contributions: "list[UIContribution] | tuple[UIContribution, ...]") -> Disposable:
+    def register_all(
+        self, contributions: list[UIContribution] | tuple[UIContribution, ...]
+    ) -> Disposable:
         subscriptions = [self.register(contribution) for contribution in contributions]
 
         def _remove_all() -> None:

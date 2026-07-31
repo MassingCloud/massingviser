@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from ...kernel import KernelError, PluginContext, Result, err, ok
 from ...schema import (
@@ -16,7 +17,7 @@ from ...schema import (
     measurability_reason,
 )
 from ...sdk import Clock, IdFactory, RecordStore, create_record_store
-from .alignment import PlanarFit, fit_planar
+from .alignment import fit_planar
 from .contracts import TWIN_EVENTS, PointPair, TwinObjectFactoryToken
 
 #: Targets that turn evidence into something the platform treats as authored geometry.
@@ -74,7 +75,10 @@ class TwinRegistryServiceImpl:
             )
         # Captured reality with no georeference cannot be checked against a survey or combined
         # with anything else, so it is refused rather than accepted and quietly mistrusted later.
-        if record.kind in ("point-cloud", "gaussian-splat", "mesh-scan") and record.geo_reference is None:
+        if (
+            record.kind in ("point-cloud", "gaussian-splat", "mesh-scan")
+            and record.geo_reference is None
+        ):
             return err(
                 KernelError(
                     "COMMAND_FAILED",
@@ -145,9 +149,7 @@ class TwinRegistryServiceImpl:
     async def link(
         self, twin_object_id: Id, elements: Sequence[ElementRef]
     ) -> Result[TwinObjectRecord, KernelError]:
-        updated = self._stores.objects.update(
-            twin_object_id, {"linked_elements": tuple(elements)}
-        )
+        updated = self._stores.objects.update(twin_object_id, {"linked_elements": tuple(elements)})
         return ok(updated) if updated else err(_not_found("twin object", twin_object_id))
 
 
@@ -159,7 +161,11 @@ class TwinAlignmentServiceImpl:
         self._stores = stores
 
     def _record(
-        self, twin_object_id: Id, method: str, transform: Sequence[float], rms: float | None,
+        self,
+        twin_object_id: Id,
+        method: str,
+        transform: Sequence[float],
+        rms: float | None,
         control_points: Sequence[Any] = (),
     ) -> TwinAlignmentRecord:
         record = TwinAlignmentRecord(
@@ -312,11 +318,13 @@ class TwinObservationServiceImpl:
         return tuple(
             sorted(
                 self._stores.observations.query(
-                    lambda o: (twin_object_id is None or o.twin_object_id == twin_object_id)
-                    and (metric is None or o.metric == metric)
-                    and (since is None or o.observed_at >= since)
-                    and (until is None or o.observed_at <= until)
-                    and (quality is None or o.quality == quality)
+                    lambda o: (
+                        (twin_object_id is None or o.twin_object_id == twin_object_id)
+                        and (metric is None or o.metric == metric)
+                        and (since is None or o.observed_at >= since)
+                        and (until is None or o.observed_at <= until)
+                        and (quality is None or o.quality == quality)
+                    )
                 ),
                 key=lambda o: o.observed_at,
             )
@@ -342,9 +350,7 @@ class TwinTimelineServiceImpl:
         if not self._stores.objects.has(twin_object_id):
             return err(_not_found("twin object", twin_object_id))
         if to_time < from_time:
-            return err(
-                KernelError("COMMAND_FAILED", "The timeline ends before it starts.", {})
-            )
+            return err(KernelError("COMMAND_FAILED", "The timeline ends before it starts.", {}))
         series = self._observations.query(
             twin_object_id=twin_object_id, metric=metric, since=from_time, until=to_time
         )

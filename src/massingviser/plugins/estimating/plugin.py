@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ...kernel import CommandDefinition, PluginContext, UIContribution
 from ...sdk import Clock, IdFactory, SequentialIdFactory, SystemClock, define_plugin
@@ -35,9 +36,7 @@ def _unwrap(result: Any) -> Any:
     return result.value
 
 
-def create_estimating_plugin(
-    *, clock: Clock | None = None, ids: IdFactory | None = None
-) -> Any:
+def create_estimating_plugin(*, clock: Clock | None = None, ids: IdFactory | None = None) -> Any:
     """5D estimating, packaged as a plugin.
 
     Depends on no other plugin. It reaches for a model element source and a schedule basis through
@@ -110,9 +109,7 @@ def create_estimating_plugin(
 
         async def generate_cashflow(params: Mapping[str, Any], _ctx: Any) -> Any:
             return _unwrap(
-                await cashflow.generate(
-                    params["estimate_id"], unit=params.get("unit", "month")
-                )
+                await cashflow.generate(params["estimate_id"], unit=params.get("unit", "month"))
             )
 
         for command in (

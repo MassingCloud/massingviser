@@ -14,8 +14,8 @@ A client that asks "what did I click" gets back something it can immediately loo
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
 from ..kernel import CapabilityToken, create_capability_token
 from .bvh import Aabb, Bvh
@@ -36,7 +36,9 @@ class ClashCandidate:
     penetration: float
 
 
-def frustum_from_matrix(view_projection: Sequence[float]) -> tuple[tuple[float, float, float, float], ...]:
+def frustum_from_matrix(
+    view_projection: Sequence[float],
+) -> tuple[tuple[float, float, float, float], ...]:
     """Extract six inward-facing planes from a column-major view-projection matrix.
 
     Column-major with translation at 12-14, matching every transform in this platform. The
@@ -153,8 +155,8 @@ class SceneIndex:
 
     @staticmethod
     def from_extrusions(
-        elements: Iterable[tuple[str, str, Sequence[Sequence[float]], float, float]]
-    ) -> "SceneIndex":
+        elements: Iterable[tuple[str, str, Sequence[Sequence[float]], float, float]],
+    ) -> SceneIndex:
         """Build from ``(global_id, group, footprint, base, height)`` tuples.
 
         The shape massing produces: a plan outline extruded between two elevations.

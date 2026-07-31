@@ -1,5 +1,9 @@
 # MassingViser
 
+[![CI](https://github.com/MassingCloud/massingviser/actions/workflows/ci.yml/badge.svg)](https://github.com/MassingCloud/massingviser/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/MassingCloud/massingviser)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A federated **AEC platform in pure Python** — a plugin kernel, fifteen capability families,
 content-addressed version control, server-side geometry, and a browser viewer.
 
@@ -274,6 +278,21 @@ python -m pytest
 
 The architecture checks are mutation-tested: injecting a plugin cross-import, an `import viser`
 below the shell, a kernel-reaches-up import, or `scipy` in the compute layer each fails the suite.
+
+CI runs the suite two ways, because "the extras are optional" is a claim and not a hope:
+
+| Job | Installs | Result |
+|---|---|---|
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 441 pass, 18 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 459 pass |
+
+The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
+as happily if an extra crept in through a transitive dependency, and the thing it exists to prove
+would quietly stop being proven.
+
+```bash
+ruff check . && ruff format --check . && python -m pytest
+```
 
 ---
 
