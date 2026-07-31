@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pipx install ruff==0.15.19
+      # Installed from `[dev]` so the pin lives in exactly one place. Two copies of a version
+      # number drift, and the drift shows up as a red build on an unrelated change.
+      - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
 

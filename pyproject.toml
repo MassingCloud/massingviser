@@ -40,7 +40,11 @@ solids = ["trimesh>=4.0", "manifold3d>=2.0"]
 crs = ["pyproj>=3.6"]
 # Everything optional at once.
 all = ["ifcopenshell>=0.8.0", "trimesh>=4.0", "manifold3d>=2.0", "pyproj>=3.6"]
-dev = ["pytest>=8.0", "ruff>=0.15"]
+# ruff is pinned **exactly**, not floored. A formatter that drifts reformats the repository on
+# somebody else's machine and turns an unrelated pull request into a thousand-line diff -- and an
+# unpinned one broke a release build here with no code change behind it, when 0.16 began
+# formatting Python blocks inside Markdown.
+dev = ["pytest>=8.0", "ruff==0.15.19"]
 
 [project.scripts]
 massingviser = "massingviser.__main__:main"

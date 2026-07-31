@@ -94,12 +94,12 @@ Models are versioned the way [Speckle](https://github.com/specklesystems) versio
 Git's shape applied to a building rather than to text. `massingviser.vcs` has **no dependencies**.
 
 ```python
-repo   = Repository(filesystem_storage("project.mass"))
-first  = (await repo.save(scheme, message="Concept", author="ada")).value
+repo = Repository(filesystem_storage("project.mass"))
+first = (await repo.save(scheme, message="Concept", author="ada")).value
 await repo.create_branch("option-b")
 second = (await repo.save(taller, message="30 storeys", author="ada", branch="option-b")).value
 
-(await repo.diff(first.id, second.id)).value              # a set difference over ids
+(await repo.diff(first.id, second.id)).value  # a set difference over ids
 (await repo.merge(ours=first.id, theirs=second.id, author="ada")).value
 ```
 
@@ -178,9 +178,9 @@ filters and inspects.
 
 ```python
 plan = (await engine.plan(have=client_payload_ids)).value
-plan.fetch        # PayloadRefs this client does not hold
+plan.fetch  # PayloadRefs this client does not hold
 plan.fetch_bytes  # what the transfer will cost, before starting it
-plan.stale        # ids it can evict
+plan.stale  # ids it can evict
 
 data = (await kernel.commands.execute("engine.scene.payload", {"payloadId": ref.id})).value
 ```
@@ -278,18 +278,23 @@ from massingviser.sdk import define_plugin
 
 GreeterToken = create_capability_token("demo.greeter")
 
+
 def activate(context):
     log = context.state.define_slice("log", ())
     context.capabilities.provide(GreeterToken, lambda name: f"Hello, {name}")
-    context.commands.register(CommandDefinition(
-        id="demo.greet",
-        title="Greet",
-        permission="demo.greet",
-        handler=lambda params, ctx: log.update(lambda s: (*s, params["name"])),
-    ))
+    context.commands.register(
+        CommandDefinition(
+            id="demo.greet",
+            title="Greet",
+            permission="demo.greet",
+            handler=lambda params, ctx: log.update(lambda s: (*s, params["name"])),
+        )
+    )
 
-greeter = define_plugin(id="demo.greeter", version="1.0.0",
-                        permissions=["demo.greet"], activate=activate)
+
+greeter = define_plugin(
+    id="demo.greeter", version="1.0.0", permissions=["demo.greet"], activate=activate
+)
 ```
 
 Everything registered through `context` is released automatically on deactivate. Test it against a
