@@ -61,9 +61,15 @@ before(async () => {
   });
   page = await browser.newPage();
   await page.setViewport({ width: 900, height: 700 });
-  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.viewer && window.viewer.meshes.size > 0, {
+  // `domcontentloaded` and then wait on what the test actually means. `networkidle0` never settles
+  // reliably here: the page keeps fetching payloads after load, and on a slow SwiftShader runner
+  // that read as a navigation timeout rather than as the page working exactly as designed.
+  await page.goto(`http://127.0.0.1:${PORT}/`, {
+    waitUntil: 'domcontentloaded',
     timeout: 60_000,
+  });
+  await page.waitForFunction(() => window.viewer && window.viewer.meshes.size > 0, {
+    timeout: 120_000,
   });
   // One more frame after the camera has framed the model.
   await new Promise((resolve) => setTimeout(resolve, 1500));
