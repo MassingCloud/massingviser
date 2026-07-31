@@ -324,6 +324,50 @@ async def test_importing_ifc_through_the_command_bus_rewires_the_platform(ifc_pa
     await kernel.stop()
 
 
+@ifc_only
+async def test_an_imported_ifc_model_reaches_the_engine_as_drawable_geometry(ifc_path):
+    """The last mile: a file on disk becomes buffers a renderer can upload, with nothing manual."""
+    from massingviser import build_kernel
+    from massingviser.geometry import MESH_ENCODING, decode_mesh_batch
+    from massingviser.plugins.engine import ENGINE_COMMANDS, SceneExportToken
+    from massingviser.plugins.interop import INTEROP_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    await kernel.commands.execute(
+        INTEROP_COMMANDS.import_payload,
+        {"payload": Path(ifc_path).read_bytes(), "filename": "walls.ifc"},
+    )
+
+    service = kernel.capabilities.get(SceneExportToken)
+    package = (await service.build()).value
+    geometry_payloads = [p for p in package.payloads if p.role == "geometry"]
+    assert geometry_payloads, "the IFC adapter published no geometry"
+    assert all(p.encoding == MESH_ENCODING for p in geometry_payloads)
+
+    drawable = [node for node in package.nodes if node.geometry]
+    assert len(drawable) == 3
+    # The scene validates as renderable, not as the semantic half.
+    report = service.validate(package)
+    assert report.ok
+    assert not any("semantic half only" in warning for warning in report.warnings)
+
+    # And the bytes come back through the command bus, decodable, with the wall in them.
+    wall = drawable[0]
+    data = (
+        await kernel.commands.execute(
+            ENGINE_COMMANDS.payload, {"payloadId": wall.geometry[0].payload_id}
+        )
+    ).value
+    meshes = decode_mesh_batch(data)
+    mesh = meshes[wall.geometry[0].geometry_index]
+    assert len(mesh.faces) == wall.geometry[0].face_count
+    # A 5 x 0.2 x 3 wall, in metres, in world coordinates -- the units the format promises.
+    span = mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0)
+    assert sorted(round(float(v), 3) for v in span) == [0.2, 3.0, 5.0]
+    await kernel.stop()
+
+
 # ---------------------------------------------------------------------------------------------
 # Narrow-phase clash
 # ---------------------------------------------------------------------------------------------

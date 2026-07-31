@@ -14,10 +14,15 @@ change by a line.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .geometry import SceneIndex, SpatialIndexToken
+from .geometry import (
+    MESH_ENCODING,
+    SceneIndex,
+    SpatialIndexToken,
+    build_geometry_payloads,
+)
 from .kernel import Kernel, create_kernel
 from .plugins.analytics import MetricProviderToken, MetricValue, analytics_plugin
 from .plugins.authoring import authoring_plugin
@@ -28,7 +33,15 @@ from .plugins.coordination import (
     SnapshotElement,
     coordination_plugin,
 )
-from .plugins.engine import SceneNode, SceneNodeSourceToken, engine_plugin
+from .plugins.engine import (
+    GeometryPayloadSourceToken,
+    GeometryRef,
+    PayloadRef,
+    SceneNode,
+    SceneNodeSourceToken,
+    engine_plugin,
+    payload_path,
+)
 from .plugins.estimating import (
     BoqToken,
     ModelElementSourceToken,
@@ -47,7 +60,9 @@ from .plugins.massing import (
     MetricsToken,
     ProfileToken,
     StoryToken,
+    extrude_stories,
     massing_plugin,
+    to_xy,
 )
 from .plugins.planning import ElementFilterSourceToken, planning_plugin
 from .plugins.procurement import BoqLineSourceToken, PackageBoqLine, procurement_plugin
@@ -430,11 +445,131 @@ class _MassingMetrics:
         )
 
 
+class _MassingGeometrySource:
+    """Tessellates massing storeys and publishes them as content-addressed geometry payloads.
+
+    The same ``extrude_stories`` call the viewer draws with, so what an engine receives and what
+    the browser shows cannot drift into two different buildings.
+
+    Rebuilt when the geometry *signature* changes -- mass ids, profile outlines and storey heights.
+    Keying on the inputs rather than on an event means an edit that does not move a vertex does not
+    invalidate a single payload, which is the behaviour that makes caching by content id worth
+    anything. Encoding a tower is milliseconds; doing it on every camera move would not be.
+    """
+
+    __slots__ = ("_kernel", "_signature", "_set", "_refs")
+
+    def __init__(self, kernel: Kernel[Any]) -> None:
+        self._kernel = kernel
+        self._signature: Any = None
+        self._set: Any = None
+        self._refs: tuple[Any, ...] = ()
+
+    def _inputs(self) -> tuple[Any, dict[str, tuple[Any, Any]]]:
+        masses = self._kernel.capabilities.get(MassingToken)
+        stories = self._kernel.capabilities.get(StoryToken)
+        profiles = self._kernel.capabilities.get(ProfileToken)
+        if masses is None or stories is None or profiles is None:
+            return (), {}
+
+        signature: list[Any] = []
+        meshes: dict[str, tuple[Any, Any]] = {}
+        for mass in masses.list():
+            profile = profiles.get(mass.profile_id)
+            if profile is None:
+                continue
+            outer = to_xy(profile.points)
+            holes = [to_xy(hole) for hole in profile.holes]
+            story_records = stories.stories(mass.id)
+            heights = [story.height for story in story_records] or list(mass.story_heights)
+            if not heights:
+                continue
+
+            overrides: dict[int, Sequence[tuple[float, float]]] = {}
+            for story in story_records:
+                if story.profile_id:
+                    override = profiles.get(story.profile_id)
+                    if override is not None:
+                        overrides[story.index] = to_xy(override.points)
+
+            signature.append(
+                (
+                    mass.id,
+                    tuple(outer),
+                    tuple(tuple(hole) for hole in holes),
+                    tuple(heights),
+                    profile.base_elevation,
+                    tuple(sorted((k, tuple(v)) for k, v in overrides.items())),
+                )
+            )
+            for story_mesh in extrude_stories(
+                outer,
+                holes,
+                heights,
+                base_elevation=profile.base_elevation,
+                story_outlines=overrides or None,
+            ):
+                if story_mesh.mesh.is_empty:
+                    continue
+                # The same id `_MassingElementSource` costs and `_MassingElementResolver` anchors.
+                # Geometry that used its own numbering would be geometry nothing else could name.
+                meshes[f"{mass.id}:{story_mesh.index:03d}"] = (
+                    story_mesh.mesh.vertices,
+                    story_mesh.mesh.faces,
+                )
+        return tuple(signature), meshes
+
+    def _payloads(self) -> Any:
+        signature, meshes = self._inputs()
+        if signature != self._signature or self._set is None:
+            self._set = build_geometry_payloads(meshes)
+            self._signature = signature
+            self._refs = tuple(
+                PayloadRef(
+                    id=payload.id,
+                    role="geometry",
+                    path=payload_path(payload.id, "bin"),
+                    encoding=MESH_ENCODING,
+                    byte_length=payload.byte_length,
+                    lod=payload.lod,
+                    mesh_count=payload.mesh_count,
+                )
+                for payload in self._set.payloads
+            )
+        return self._set
+
+    # -- GeometryPayloadSource ---------------------------------------------------------------
+
+    def payload_refs(self) -> Sequence[Any]:
+        self._payloads()
+        return self._refs
+
+    def geometry(self) -> Mapping[str, Sequence[GeometryRef]]:
+        built = self._payloads()
+        return {
+            global_id: tuple(
+                GeometryRef(
+                    payload_id=placement.payload_id,
+                    geometry_index=placement.geometry_index,
+                    lod=placement.lod,
+                    face_count=placement.face_count,
+                )
+                for placement in ladder
+            )
+            for global_id, ladder in built.placements.items()
+        }
+
+    def read(self, payload_id: str) -> bytes | None:
+        found = self._payloads().by_id(payload_id)
+        return found.data if found is not None else None
+
+
 class _MassingSceneSource:
     """Publishes massing storeys as engine scene nodes.
 
-    Semantic half only -- the viewer contracts hand out no mesh buffers, so no geometry payloads
-    are declared and ``validate_scene_package`` says so rather than leaving a consumer to find out.
+    The semantic half. Geometry arrives separately, through ``_MassingGeometrySource``, and the
+    engine service joins the two on GlobalId -- so a deployment that installs only this one still
+    exports a package that selects, filters and inspects.
     """
 
     __slots__ = ("_source",)
@@ -502,6 +637,9 @@ def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
         context.capabilities.provide(MetricProviderToken, _MassingMetrics(kernel), version="0.1.0")
         context.capabilities.provide(
             SceneNodeSourceToken, _MassingSceneSource(source), version="0.1.0"
+        )
+        context.capabilities.provide(
+            GeometryPayloadSourceToken, _MassingGeometrySource(kernel), version="0.1.0"
         )
         context.logger.info("Massing published as a measurable, anchorable model")
 

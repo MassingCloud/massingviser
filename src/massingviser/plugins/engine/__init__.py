@@ -4,6 +4,9 @@ from .plugin import (
     ENGINE_COMMANDS,
     ENGINE_EVENTS,
     PLUGIN_ID,
+    GeometryPayloadSource,
+    GeometryPayloadSourceToken,
+    PayloadPlan,
     SceneExportService,
     SceneExportToken,
     SceneNodeSource,
@@ -13,6 +16,7 @@ from .plugin import (
 )
 from .scene import (
     IDENTITY_TRANSFORM,
+    GeometryRef,
     PayloadRef,
     PayloadRole,
     RealityLayer,
@@ -34,6 +38,10 @@ __all__ = [
     "ENGINE_EVENTS",
     "IDENTITY_TRANSFORM",
     "PLUGIN_ID",
+    "GeometryPayloadSource",
+    "GeometryPayloadSourceToken",
+    "GeometryRef",
+    "PayloadPlan",
     "PayloadRef",
     "PayloadRole",
     "RealityLayer",

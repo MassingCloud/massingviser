@@ -97,11 +97,62 @@ def create_adapters_plugin() -> Any:
     )
 
 
+class _IfcGeometrySource:
+    """An IFC model's triangles, encoded once and served by content id.
+
+    Built eagerly on import rather than on first request: the cost belongs to the import that the
+    user already knows is slow, not to the first camera move, which they expect to be instant.
+    """
+
+    __slots__ = ("_set", "_refs")
+
+    def __init__(self, meshes: Mapping[str, Any]) -> None:
+        from ..geometry import MESH_ENCODING, build_geometry_payloads
+        from ..plugins.engine import PayloadRef, payload_path
+
+        self._set = build_geometry_payloads(meshes)
+        self._refs = tuple(
+            PayloadRef(
+                id=payload.id,
+                role="geometry",
+                path=payload_path(payload.id, "bin"),
+                encoding=MESH_ENCODING,
+                byte_length=payload.byte_length,
+                lod=payload.lod,
+                mesh_count=payload.mesh_count,
+            )
+            for payload in self._set.payloads
+        )
+
+    def payload_refs(self) -> Any:
+        return self._refs
+
+    def geometry(self) -> Any:
+        from ..plugins.engine import GeometryRef
+
+        return {
+            global_id: tuple(
+                GeometryRef(
+                    payload_id=placement.payload_id,
+                    geometry_index=placement.geometry_index,
+                    lod=placement.lod,
+                    face_count=placement.face_count,
+                )
+                for placement in ladder
+            )
+            for global_id, ladder in self._set.placements.items()
+        }
+
+    def read(self, payload_id: str) -> bytes | None:
+        found = self._set.by_id(payload_id)
+        return found.data if found is not None else None
+
+
 def _publish_model(context: PluginContext, ifc_module: Any, model: Any, model_id: str) -> None:
     """Wire one parsed IFC model into every capability that consumes elements."""
     from ..geometry import SceneIndex, SpatialIndexToken
     from ..plugins.coordination import ClashEngineToken, ModelSnapshotToken
-    from ..plugins.engine import SceneNodeSourceToken
+    from ..plugins.engine import GeometryPayloadSourceToken, SceneNodeSourceToken
     from ..plugins.estimating import ModelElementSourceToken
     from ..plugins.markup import ElementResolverToken
 
@@ -116,6 +167,18 @@ def _publish_model(context: PluginContext, ifc_module: Any, model: Any, model_id
         SceneNodeSourceToken,
     ):
         context.capabilities.provide(token, source, version=PLUGIN_VERSION, priority=10)
+
+    meshes = source.meshes()
+    if meshes:
+        # The expensive half, done once at import. Tessellation already happened when the file was
+        # parsed; this decimates, chunks and content-addresses it, so what reaches a client is a
+        # budget rather than a building.
+        context.capabilities.provide(
+            GeometryPayloadSourceToken,
+            _IfcGeometrySource(meshes),
+            version=PLUGIN_VERSION,
+            priority=10,
+        )
 
     boxes = source.boxes()
     if boxes:

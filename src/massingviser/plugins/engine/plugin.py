@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 from ...kernel import (
@@ -16,6 +17,7 @@ from ...kernel import (
 )
 from ...sdk import Clock, IdFactory, SystemClock, define_plugin
 from .scene import (
+    GeometryRef,
     PayloadRef,
     RealityLayer,
     SceneNode,
@@ -52,6 +54,51 @@ SceneNodeSourceToken: CapabilityToken[SceneNodeSource] = create_capability_token
 
 
 @runtime_checkable
+class GeometryPayloadSource(Protocol):
+    """Supplies the other half: the buffers, and which element is where inside them.
+
+    Deliberately separate from ``SceneNodeSource``. Semantics come from whatever holds the model;
+    geometry comes from whatever can tessellate and encode it, which on a deployment with no numpy
+    is nothing at all. Splitting them is what lets the semantic half ship regardless -- a package
+    with no geometry is still enough to select, filter and inspect.
+
+    Everything crossing this boundary is bytes and dataclasses, so this family stays standard
+    library only while the encoder behind it uses numpy freely.
+    """
+
+    def payload_refs(self) -> Sequence[PayloadRef]: ...
+    #: GlobalId -> its LOD ladder, finest first.
+    def geometry(self) -> Mapping[str, Sequence[GeometryRef]]: ...
+    #: The buffer, or None if this source does not hold it.
+    def read(self, payload_id: str) -> bytes | None: ...
+
+
+GeometryPayloadSourceToken: CapabilityToken[GeometryPayloadSource] = create_capability_token(
+    "engine.geometry-source"
+)
+
+
+@dataclass(frozen=True)
+class PayloadPlan:
+    """What a client still needs, given what it already holds.
+
+    The point of content addressing, made into an answer: ``fetch`` is a set difference over ids,
+    so a client that reconnects after one wall moved is told about one chunk rather than being
+    handed the building again.
+    """
+
+    fetch: tuple[PayloadRef, ...]
+    #: Ids the client offered that are still current, and so must not be evicted.
+    reuse: tuple[str, ...]
+    #: Ids the client offered that this scene no longer contains.
+    stale: tuple[str, ...]
+
+    @property
+    def fetch_bytes(self) -> int:
+        return sum(ref.byte_length for ref in self.fetch)
+
+
+@runtime_checkable
 class SceneExportService(Protocol):
     async def build(self) -> Result[ScenePackage, KernelError]: ...
     def validate(self, package: ScenePackage, **options: Any) -> SceneValidation: ...
@@ -64,6 +111,8 @@ SceneExportToken: CapabilityToken[SceneExportService] = create_capability_token(
 class ENGINE_COMMANDS:
     build = "engine.scene.build"
     export_manifest = "engine.scene.manifest"
+    plan = "engine.scene.plan"
+    payload = "engine.scene.payload"
 
 
 class ENGINE_EVENTS:
@@ -79,6 +128,53 @@ class SceneExportServiceImpl:
 
     def _sources(self) -> list[Any]:
         return [p.value for p in self._context.capabilities.get_all(SceneNodeSourceToken)]
+
+    def _geometry_sources(self) -> list[Any]:
+        return [p.value for p in self._context.capabilities.get_all(GeometryPayloadSourceToken)]
+
+    def _geometry(self) -> tuple[dict[str, tuple[GeometryRef, ...]], list[PayloadRef]]:
+        """Collect the ladders and the payload declarations from every geometry source.
+
+        Higher-priority sources are consulted first and win an element outright rather than being
+        merged with a lower one. A wall whose LOD0 came from an IFC parser and whose LOD2 came from
+        the massing bridge would pop between two different shapes as the camera pulled back.
+        """
+        ladders: dict[str, tuple[GeometryRef, ...]] = {}
+        refs: dict[str, PayloadRef] = {}
+        for source in self._geometry_sources():
+            for global_id, ladder in source.geometry().items():
+                if global_id not in ladders:
+                    ladders[global_id] = tuple(ladder)
+            for ref in source.payload_refs():
+                refs.setdefault(ref.id, ref)
+        return ladders, list(refs.values())
+
+    def read_payload(self, payload_id: str) -> Result[bytes, KernelError]:
+        for source in self._geometry_sources():
+            data = source.read(payload_id)
+            if data is not None:
+                return ok(data)
+        return err(
+            KernelError(
+                "CAPABILITY_NOT_FOUND",
+                f'No geometry source holds payload "{payload_id}".',
+                {"payload_id": payload_id},
+            )
+        )
+
+    async def plan(self, have: Sequence[str] = ()) -> Result[PayloadPlan, KernelError]:
+        built = await self.build()
+        if not built.ok:
+            return err(built.error)
+        current = {ref.id: ref for ref in built.value.payloads}
+        held = set(have)
+        return ok(
+            PayloadPlan(
+                fetch=tuple(ref for id_, ref in sorted(current.items()) if id_ not in held),
+                reuse=tuple(sorted(held & set(current))),
+                stale=tuple(sorted(held - set(current))),
+            )
+        )
 
     async def build(self) -> Result[ScenePackage, KernelError]:
         sources = self._sources()
@@ -113,12 +209,20 @@ class SceneExportServiceImpl:
                 )
             )
 
+        ladders, geometry_refs = self._geometry()
+        nodes = [
+            replace(node, geometry=ladders[node.global_id]) if node.global_id in ladders else node
+            for source in sources
+            for node in source.nodes()
+        ]
+
         return build_scene_package(
             generator=f"massingviser/{PLUGIN_VERSION}",
             generated_at=self._clock.iso(),
             source_units=next(iter(units)) if units else "m",
-            nodes=[node for source in sources for node in source.nodes()],
-            payloads=[payload for source in sources for payload in source.payloads()],
+            nodes=nodes,
+            payloads=[payload for source in sources for payload in source.payloads()]
+            + geometry_refs,
             reality_layers=[layer for source in sources for layer in source.reality_layers()],
             crs=next(iter(declared)) if declared else None,
         )
@@ -161,6 +265,42 @@ def create_engine_plugin(*, clock: Clock | None = None, ids: IdFactory | None = 
                 id=ENGINE_COMMANDS.export_manifest,
                 title="Export scene manifest",
                 handler=manifest,
+            )
+        )
+
+        async def plan(params: Mapping[str, Any], _ctx: Any) -> Any:
+            have = params.get("have", ())
+            if isinstance(have, (str, bytes)):
+                # A bare string would iterate as characters and report every payload as stale.
+                raise KernelError(
+                    "COMMAND_FAILED", '"have" is a list of payload ids, not a string.', {}
+                )
+            result = await service.plan(tuple(have))
+            if not result.ok:
+                raise result.error
+            return result.value
+
+        async def payload(params: Mapping[str, Any], _ctx: Any) -> Any:
+            payload_id = params.get("payloadId") or params.get("payload_id")
+            if not payload_id:
+                raise KernelError("COMMAND_FAILED", "A payload id is required.", {})
+            result = service.read_payload(str(payload_id))
+            if not result.ok:
+                raise result.error
+            return result.value
+
+        context.commands.register(
+            CommandDefinition(
+                id=ENGINE_COMMANDS.plan,
+                title="Plan payload transfer",
+                handler=plan,
+            )
+        )
+        context.commands.register(
+            CommandDefinition(
+                id=ENGINE_COMMANDS.payload,
+                title="Read a geometry payload",
+                handler=payload,
             )
         )
         context.logger.info("Engine bridge ready")

@@ -7,10 +7,81 @@ answers, because the point of moving them server-side is that the client stops b
 from __future__ import annotations
 
 import math
+import struct
 
+import numpy as np
 import pytest
 
 from massingviser.geometry import Aabb, Bvh, SceneIndex, frustum_from_matrix
+from massingviser.geometry.payload import (
+    FORMAT_VERSION,
+    MAGIC,
+    MeshInput,
+    build_geometry_payloads,
+    chunk_meshes,
+    decode_mesh_batch,
+    encode_mesh_batch,
+)
+
+
+def _icosphere(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
+    """A mesh dense enough to actually need decimating."""
+    t = (1.0 + math.sqrt(5.0)) / 2.0
+    vertices = [
+        (-1, t, 0),
+        (1, t, 0),
+        (-1, -t, 0),
+        (1, -t, 0),
+        (0, -1, t),
+        (0, 1, t),
+        (0, -1, -t),
+        (0, 1, -t),
+        (t, 0, -1),
+        (t, 0, 1),
+        (-t, 0, -1),
+        (-t, 0, 1),
+    ]
+    faces = [
+        (0, 11, 5),
+        (0, 5, 1),
+        (0, 1, 7),
+        (0, 7, 10),
+        (0, 10, 11),
+        (1, 5, 9),
+        (5, 11, 4),
+        (11, 10, 2),
+        (10, 7, 6),
+        (7, 1, 8),
+        (3, 9, 4),
+        (3, 4, 2),
+        (3, 2, 6),
+        (3, 6, 8),
+        (3, 8, 9),
+        (4, 9, 5),
+        (2, 4, 11),
+        (6, 2, 10),
+        (8, 6, 7),
+        (9, 8, 1),
+    ]
+    vertices = [tuple(c / math.sqrt(sum(v * v for v in p)) for c in p) for p in vertices]
+    for _ in range(subdivisions):
+        new_faces = []
+        cache: dict[tuple[int, int], int] = {}
+
+        def midpoint(a: int, b: int, *, cache: dict[tuple[int, int], int] = cache) -> int:
+            key = (min(a, b), max(a, b))
+            if key not in cache:
+                point = tuple((vertices[a][i] + vertices[b][i]) / 2 for i in range(3))
+                length = math.sqrt(sum(c * c for c in point))
+                vertices.append(tuple(c / length for c in point))
+                cache[key] = len(vertices) - 1
+            return cache[key]
+
+        for a, b, c in faces:
+            ab, bc, ca = midpoint(a, b), midpoint(b, c), midpoint(c, a)
+            new_faces += [(a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)]
+        faces = new_faces
+    return np.asarray(vertices), np.asarray(faces)
 
 
 def _grid(side: int = 10, pitch: float = 2.0) -> tuple[list[str], list[Aabb]]:
@@ -252,3 +323,198 @@ def test_a_tolerance_turns_clash_into_a_clearance_test():
     scene = SceneIndex(boxes, groups={"a": "left", "b": "right"})
     assert scene.clash("left", "right") == ()
     assert scene.clash("left", "right", tolerance=2.5)
+
+
+# ---------------------------------------------------------------------------------------------
+# Geometry payloads
+#
+# The wire format is the part a C++, C# or Rust importer will be held to, so these tests assert
+# byte offsets and exact sizes rather than "it round-trips" -- a reader written from the docstring
+# has to agree with this, and only the numbers make that checkable.
+# ---------------------------------------------------------------------------------------------
+
+
+def _cube(
+    offset: float = 0.0,
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+    vertices = [
+        (0, 0, 0),
+        (1, 0, 0),
+        (1, 1, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (1, 0, 1),
+        (1, 1, 1),
+        (0, 1, 1),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 4, 5),
+        (0, 5, 1),
+        (1, 5, 6),
+        (1, 6, 2),
+        (2, 6, 7),
+        (2, 7, 3),
+        (3, 7, 4),
+        (3, 4, 0),
+    ]
+    return [(x + offset, y + offset, z + offset) for x, y, z in vertices], faces
+
+
+def test_a_payload_is_exactly_the_size_the_format_says():
+    vertices, faces = _cube()
+    payload = encode_mesh_batch([MeshInput("A", np.asarray(vertices), np.asarray(faces))])
+    # 32 header + 1 directory entry + 8 vertices x 3 floats + 36 indices.
+    assert payload.byte_length == 32 + 16 + 8 * 3 * 4 + 36 * 4
+
+
+def test_a_payload_starts_with_its_magic_and_version():
+    """An importer's first check, and the reason a wrong file fails loudly."""
+    payload = encode_mesh_batch([MeshInput("A", *(np.asarray(x) for x in _cube()))])
+    assert payload.data[:4] == MAGIC
+    assert struct.unpack("<I", payload.data[4:8])[0] == FORMAT_VERSION
+
+
+def test_the_buffer_round_trips_through_the_decoder():
+    vertices, faces = _cube()
+    meshes = [
+        MeshInput("A", np.asarray(vertices), np.asarray(faces)),
+        MeshInput("B", np.asarray(vertices) + 10.0, np.asarray(faces)),
+    ]
+    decoded = decode_mesh_batch(encode_mesh_batch(meshes).data)
+    assert len(decoded) == 2
+    assert np.allclose(decoded[0].vertices, vertices)
+    assert np.allclose(decoded[1].vertices, np.asarray(vertices) + 10.0)
+    assert np.array_equal(decoded[1].faces, faces)
+
+
+def test_indices_are_local_to_their_mesh():
+    """So a consumer can upload one element without rebasing every index in the chunk."""
+    vertices, faces = _cube()
+    meshes = [MeshInput(name, np.asarray(vertices), np.asarray(faces)) for name in ("A", "B")]
+    decoded = decode_mesh_batch(encode_mesh_batch(meshes).data)
+    assert decoded[1].faces.max() < len(vertices)
+
+
+def test_the_id_is_the_content_and_nothing_else():
+    """Two models with identical geometry share the payload; the GlobalIds are not in the buffer."""
+    vertices, faces = _cube()
+    first = encode_mesh_batch([MeshInput("wall-a", np.asarray(vertices), np.asarray(faces))])
+    second = encode_mesh_batch([MeshInput("column-z", np.asarray(vertices), np.asarray(faces))])
+    assert first.id == second.id
+    assert len(first.id) == 32
+
+
+def test_moving_a_vertex_changes_the_id():
+    vertices, faces = _cube()
+    moved = np.asarray(vertices)
+    moved[0][0] += 0.001
+    a = encode_mesh_batch([MeshInput("A", np.asarray(vertices), np.asarray(faces))])
+    b = encode_mesh_batch([MeshInput("A", moved, np.asarray(faces))])
+    assert a.id != b.id
+
+
+def test_the_same_geometry_at_a_different_lod_is_a_different_payload():
+    """The level is in the header, so a client cannot mistake one for the other."""
+    vertices, faces = _cube()
+    mesh = [MeshInput("A", np.asarray(vertices), np.asarray(faces))]
+    assert encode_mesh_batch(mesh, lod=0).id != encode_mesh_batch(mesh, lod=2).id
+
+
+def test_a_face_indexing_past_its_own_vertices_is_refused():
+    """It would silently read the next mesh in the chunk and draw garbage."""
+    vertices, _ = _cube()
+    with pytest.raises(ValueError, match="indexing vertex"):
+        encode_mesh_batch([MeshInput("A", np.asarray(vertices), np.asarray([(0, 1, 99)]))])
+
+
+def test_a_truncated_payload_is_refused_not_misread():
+    payload = encode_mesh_batch([MeshInput("A", *(np.asarray(x) for x in _cube()))])
+    with pytest.raises(ValueError, match="carries"):
+        decode_mesh_batch(payload.data[:-4])
+
+
+def test_something_that_is_not_a_payload_is_refused():
+    with pytest.raises(ValueError, match="Not a mesh payload"):
+        decode_mesh_batch(b"GLTF" + bytes(64))
+
+
+def test_chunking_never_splits_a_mesh():
+    """A mesh larger than the budget gets its own chunk rather than being cut in half."""
+    vertices, faces = _cube()
+    meshes = [MeshInput(f"E{i}", np.asarray(vertices), np.asarray(faces)) for i in range(5)]
+    chunks = chunk_meshes(meshes, chunk_vertices=4)  # smaller than one cube
+    assert len(chunks) == 5
+    assert all(len(chunk) == 1 for chunk in chunks)
+
+
+def test_chunking_packs_up_to_the_budget():
+    vertices, faces = _cube()
+    meshes = [MeshInput(f"E{i}", np.asarray(vertices), np.asarray(faces)) for i in range(6)]
+    chunks = chunk_meshes(meshes, chunk_vertices=16)  # two cubes per chunk
+    assert [len(chunk) for chunk in chunks] == [2, 2, 2]
+
+
+def test_editing_one_element_rewrites_one_chunk():
+    """The claim content addressing exists to make true."""
+    vertices, faces = _cube()
+    meshes = {f"E{i:02d}": (np.asarray(vertices) + i * 3.0, np.asarray(faces)) for i in range(6)}
+    before = build_geometry_payloads(meshes, lod_budgets=(), chunk_vertices=16)
+
+    moved = dict(meshes)
+    moved["E03"] = (meshes["E03"][0] + 0.5, meshes["E03"][1])
+    after = build_geometry_payloads(moved, lod_budgets=(), chunk_vertices=16)
+
+    kept = {p.id for p in before.payloads} & {p.id for p in after.payloads}
+    assert len(before.payloads) == 3
+    assert len(kept) == 2  # only the chunk holding E03 was rewritten
+
+
+def test_chunk_boundaries_do_not_move_with_dictionary_order():
+    """Ids have to survive a differently-ordered dict, or every rebuild invalidates the cache."""
+    vertices, faces = _cube()
+    forward = {f"E{i:02d}": (np.asarray(vertices) + i * 3.0, np.asarray(faces)) for i in range(6)}
+    backward = dict(reversed(list(forward.items())))
+    assert [p.id for p in build_geometry_payloads(forward, lod_budgets=()).payloads] == [
+        p.id for p in build_geometry_payloads(backward, lod_budgets=()).payloads
+    ]
+
+
+def test_a_lod_level_that_saves_nothing_is_not_shipped():
+    """A cube is already under every budget; duplicating it three times helps nobody."""
+    vertices, faces = _cube()
+    built = build_geometry_payloads({"A": (np.asarray(vertices), np.asarray(faces))})
+    assert [placement.lod for placement in built.placements["A"]] == [0]
+
+
+def test_the_lod_ladder_gets_monotonically_coarser():
+    sphere_vertices, sphere_faces = _icosphere(4)
+    built = build_geometry_payloads({"A": (sphere_vertices, sphere_faces)})
+    counts = [placement.face_count for placement in built.placements["A"]]
+    assert len(counts) > 1
+    assert counts == sorted(counts, reverse=True)
+    # Each level earns its bytes: no level is within a third of the one above it.
+    assert all(
+        later <= earlier * 0.7 for earlier, later in zip(counts[:-1], counts[1:], strict=True)
+    )
+
+
+def test_levels_are_numbered_from_the_finest():
+    sphere_vertices, sphere_faces = _icosphere(4)
+    built = build_geometry_payloads({"A": (sphere_vertices, sphere_faces)})
+    assert [placement.lod for placement in built.placements["A"]] == list(
+        range(len(built.placements["A"]))
+    )
+
+
+def test_an_element_with_no_faces_gets_no_placement():
+    built = build_geometry_payloads({"empty": ([], []), "A": _cube()})
+    assert "empty" not in built.placements
+    assert "A" in built.placements
+
+
+def test_no_geometry_at_all_produces_no_payloads():
+    assert build_geometry_payloads({}).payloads == ()

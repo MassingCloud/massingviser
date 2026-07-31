@@ -8,6 +8,7 @@ asserted on trust.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -20,6 +21,9 @@ from massingviser.plugins.analytics import (
     linear_forecast,
 )
 from massingviser.plugins.engine import (
+    ENGINE_COMMANDS,
+    GeometryPayloadSourceToken,
+    GeometryRef,
     PayloadRef,
     RealityLayer,
     SceneExportToken,
@@ -481,3 +485,214 @@ async def test_exporting_with_no_source_says_so(harness):
     await harness.load(engine_plugin)
     result = await harness.capability(SceneExportToken).build()
     assert not result.ok and result.error.code == "CAPABILITY_NOT_FOUND"
+
+
+# ---------------------------------------------------------------------------------------------
+# Geometry payloads reaching the engine
+#
+# The join between the two halves. Semantics come from a SceneNodeSource, buffers from a
+# GeometryPayloadSource, and neither knows the other exists -- the engine service matches them on
+# GlobalId, which is the same key cost, markup and coordination use.
+# ---------------------------------------------------------------------------------------------
+
+GEOMETRY_PAYLOAD = PayloadRef(
+    id="a" * 32,
+    role="geometry",
+    path="payloads/aaaa.bin",
+    encoding="massingviser-mesh/1",
+    byte_length=512,
+    lod=0,
+    mesh_count=2,
+)
+COARSE_PAYLOAD = PayloadRef(
+    id="b" * 32,
+    role="geometry",
+    path="payloads/bbbb.bin",
+    encoding="massingviser-mesh/1",
+    byte_length=96,
+    lod=1,
+    mesh_count=2,
+)
+
+
+class _Geometry:
+    """A geometry source with a fixed two-level ladder for WALL-1 and WALL-2."""
+
+    def payload_refs(self):
+        return (GEOMETRY_PAYLOAD, COARSE_PAYLOAD)
+
+    def geometry(self):
+        return {
+            "WALL-1": (
+                GeometryRef(GEOMETRY_PAYLOAD.id, 0, lod=0, face_count=120),
+                GeometryRef(COARSE_PAYLOAD.id, 0, lod=1, face_count=12),
+            ),
+            "WALL-2": (
+                GeometryRef(GEOMETRY_PAYLOAD.id, 1, lod=0, face_count=80),
+                GeometryRef(COARSE_PAYLOAD.id, 1, lod=1, face_count=8),
+            ),
+        }
+
+    def read(self, payload_id):
+        return b"MVMS" + bytes(60) if payload_id == GEOMETRY_PAYLOAD.id else None
+
+
+class _SemanticSource(_Source):
+    """Nodes only. Geometry arrives from the other capability, which is the point being tested."""
+
+    def nodes(self):
+        return tuple(replace(node, payload_id=None, geometry_index=None) for node in _nodes())
+
+    def payloads(self):
+        return ()
+
+
+async def _engine_with_geometry(harness):
+    await harness.load(engine_plugin)
+    harness.kernel.capabilities.provide(SceneNodeSourceToken, _SemanticSource())
+    harness.kernel.capabilities.provide(GeometryPayloadSourceToken, _Geometry())
+    return harness.capability(SceneExportToken)
+
+
+async def test_geometry_joins_to_nodes_on_global_id(harness):
+    """The two halves are supplied by objects that have never heard of each other."""
+    package = (await (await _engine_with_geometry(harness)).build()).value
+    wall = next(node for node in package.nodes if node.global_id == "WALL-1")
+    assert [ref.lod for ref in wall.geometry] == [0, 1]
+    assert wall.geometry[0].face_count == 120
+    # A node the geometry source said nothing about stays semantic, and is still exported.
+    slab = next(node for node in package.nodes if node.global_id == "SLAB-1")
+    assert slab.geometry == ()
+
+
+async def test_the_finest_level_is_mirrored_onto_the_legacy_fields(harness):
+    """A reader written against the shape before the ladder existed still finds geometry."""
+    package = (await (await _engine_with_geometry(harness)).build()).value
+    wall = next(node for node in package.nodes if node.global_id == "WALL-1")
+    assert wall.payload_id == GEOMETRY_PAYLOAD.id
+    assert wall.geometry_index == 0
+
+
+async def test_a_package_with_geometry_stops_warning_that_it_has_none(harness):
+    service = await _engine_with_geometry(harness)
+    package = (await service.build()).value
+    report = service.validate(package)
+    assert report.ok
+    assert not any("semantic half only" in warning for warning in report.warnings)
+    # It does say which nodes will not draw, because that is a real thing to know.
+    assert any("carry no geometry" in warning for warning in report.warnings)
+
+
+def test_a_node_pointing_past_the_end_of_a_chunk_is_an_error():
+    """It would read whatever follows in the buffer, which draws something rather than nothing."""
+    package = build_scene_package(
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=[SceneNode("W1", "IfcWall", geometry=(GeometryRef(GEOMETRY_PAYLOAD.id, 7),))],
+        payloads=[GEOMETRY_PAYLOAD],
+    ).value
+    report = validate_scene_package(package)
+    assert not report.ok
+    assert "which holds 2" in report.errors[0]
+
+
+def test_geometry_pointing_at_an_undeclared_payload_is_refused_at_build():
+    result = build_scene_package(
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=[SceneNode("W1", "IfcWall", geometry=(GeometryRef("nope" * 8, 0),))],
+    )
+    assert not result.ok and "not declared" in result.error.message
+
+
+def test_a_disordered_lod_ladder_is_refused():
+    """Whichever level a client picked would be arbitrary, and would look like a rendering bug."""
+    result = build_scene_package(
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=[
+            SceneNode(
+                "W1",
+                "IfcWall",
+                geometry=(
+                    GeometryRef(GEOMETRY_PAYLOAD.id, 0, lod=2),
+                    GeometryRef(COARSE_PAYLOAD.id, 0, lod=1),
+                ),
+            )
+        ],
+        payloads=[GEOMETRY_PAYLOAD, COARSE_PAYLOAD],
+    )
+    assert not result.ok and "ascending and distinct" in result.error.message
+
+
+def test_declared_payloads_but_nothing_drawing_them_is_an_error():
+    package = build_scene_package(
+        generator="t",
+        generated_at="2026-01-01",
+        source_units="m",
+        nodes=[SceneNode("W1", "IfcWall")],
+        payloads=[GEOMETRY_PAYLOAD],
+    ).value
+    report = validate_scene_package(package)
+    assert not report.ok
+    assert "no node references one" in report.errors[0]
+
+
+async def test_a_cold_client_is_told_to_fetch_everything(harness):
+    plan = (await (await _engine_with_geometry(harness)).plan(())).value
+    assert {ref.id for ref in plan.fetch} == {GEOMETRY_PAYLOAD.id, COARSE_PAYLOAD.id}
+    assert plan.fetch_bytes == 512 + 96
+    assert plan.reuse == () and plan.stale == ()
+
+
+async def test_a_warm_client_is_told_to_fetch_nothing(harness):
+    """The whole point of content addressing, expressed as an answer."""
+    service = await _engine_with_geometry(harness)
+    plan = (await service.plan([GEOMETRY_PAYLOAD.id, COARSE_PAYLOAD.id])).value
+    assert plan.fetch == ()
+    assert plan.fetch_bytes == 0
+    assert set(plan.reuse) == {GEOMETRY_PAYLOAD.id, COARSE_PAYLOAD.id}
+
+
+async def test_a_client_holding_a_payload_the_scene_dropped_is_told_it_is_stale(harness):
+    service = await _engine_with_geometry(harness)
+    dropped = "c" * 32
+    plan = (await service.plan([dropped])).value
+    assert plan.stale == (dropped,)
+    assert len(plan.fetch) == 2
+
+
+async def test_a_have_list_given_as_a_string_is_refused(harness):
+    """It would iterate as characters and report every payload as stale."""
+    await _engine_with_geometry(harness)
+    result = await harness.kernel.commands.execute(ENGINE_COMMANDS.plan, {"have": "abc"})
+    assert not result.ok and "not a string" in result.error.message
+
+
+async def test_a_payload_can_be_read_back_by_id(harness):
+    await _engine_with_geometry(harness)
+    result = await harness.kernel.commands.execute(
+        ENGINE_COMMANDS.payload, {"payloadId": GEOMETRY_PAYLOAD.id}
+    )
+    assert result.ok and result.value.startswith(b"MVMS")
+
+
+async def test_an_unknown_payload_id_is_named_not_guessed(harness):
+    await _engine_with_geometry(harness)
+    result = await harness.kernel.commands.execute(ENGINE_COMMANDS.payload, {"payloadId": "zzz"})
+    assert not result.ok and "zzz" in result.error.message
+
+
+async def test_the_manifest_carries_the_ladder_and_the_payload_levels(harness):
+    """What a JavaScript importer actually parses."""
+    package = (await (await _engine_with_geometry(harness)).build()).value
+    manifest = json.loads(json.dumps(to_manifest(package)))
+    wall = next(n for n in manifest["nodes"] if n["globalId"] == "WALL-1")
+    assert [level["lod"] for level in wall["geometry"]] == [0, 1]
+    assert wall["geometry"][0]["faceCount"] == 120
+    geometry_payloads = [p for p in manifest["payloads"] if p["role"] == "geometry"]
+    assert {p["lod"] for p in geometry_payloads} == {0, 1}
+    assert all(p["meshCount"] == 2 for p in geometry_payloads)

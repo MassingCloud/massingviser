@@ -30,7 +30,7 @@ What makes it a BIM contract rather than a mesh dump:
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -68,6 +68,20 @@ class SceneRelationship:
 
 
 @dataclass(frozen=True)
+class GeometryRef:
+    """Where one element's triangles live, at one level of detail.
+
+    A node carries the whole ladder rather than a single buffer, because choosing a level is the
+    client's job -- it is the only party that knows the camera. Level 0 is the finest.
+    """
+
+    payload_id: str
+    geometry_index: int
+    lod: int = 0
+    face_count: int = 0
+
+
+@dataclass(frozen=True)
 class SceneNode:
     #: The identity. Never a viewer handle.
     global_id: str
@@ -79,6 +93,11 @@ class SceneNode:
     #: Unflattened property sets: ``{"Pset_WallCommon": {"FireRating": "60"}}``.
     property_sets: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     relationships: tuple[SceneRelationship, ...] = ()
+    #: The LOD ladder, finest first. Empty for a node with no geometry -- a storey, a zone, or a
+    #: package exported before the geometry pipeline ran.
+    geometry: tuple[GeometryRef, ...] = ()
+    #: The finest level, duplicated so a reader that predates the ladder still finds geometry.
+    #: Derived by `build_scene_package`; setting it by hand is not how a node acquires geometry.
     payload_id: str | None = None
     geometry_index: int | None = None
     #: A viewer's runtime id. Labelled transient, used by nothing, never indexed.
@@ -92,6 +111,10 @@ class PayloadRef:
     path: str
     encoding: str
     byte_length: int
+    #: Which level this buffer holds, for a geometry payload. ``None`` for other roles.
+    lod: int | None = None
+    #: How many meshes are packed into it, so a client can size its directory read.
+    mesh_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -164,13 +187,10 @@ def build_scene_package(
         )
 
     known_payloads = {payload.id for payload in payloads}
-    missing = sorted(
-        {
-            node.payload_id
-            for node in nodes
-            if node.payload_id is not None and node.payload_id not in known_payloads
-        }
-    )
+    referenced = {ref.payload_id for node in nodes for ref in node.geometry} | {
+        node.payload_id for node in nodes if node.payload_id is not None
+    }
+    missing = sorted(referenced - known_payloads)
     if missing:
         return err(
             KernelError(
@@ -179,6 +199,33 @@ def build_scene_package(
                 {"missing": missing},
             )
         )
+
+    # The ladder has to be ordered for a client to pick a level by index, and a duplicated level
+    # means two buffers claim to be the same detail -- whichever the client picked would be
+    # arbitrary, and it would look like a rendering bug rather than an export one.
+    for node in nodes:
+        levels = [ref.lod for ref in node.geometry]
+        if levels != sorted(set(levels)):
+            return err(
+                KernelError(
+                    "COMMAND_FAILED",
+                    f'Node "{node.global_id}" has LOD levels {levels}; they must be '
+                    "ascending and distinct, finest first.",
+                    {"global_id": node.global_id, "levels": levels},
+                )
+            )
+
+    resolved = [
+        replace(
+            node,
+            payload_id=node.geometry[0].payload_id,
+            geometry_index=node.geometry[0].geometry_index,
+        )
+        if node.geometry
+        else node
+        for node in nodes
+    ]
+    nodes = resolved
 
     by_class: dict[str, list[int]] = {}
     by_level: dict[str, list[int]] = {}
@@ -234,13 +281,43 @@ def validate_scene_package(
             if payload.id not in present:
                 errors.append(f'declared payload "{payload.id}" is not in the archive')
 
-    # A viewer's contracts hand out no mesh buffers, so a semantic-only package is legitimate --
-    # but the absence is reported rather than left for a consumer to discover.
-    if not any(payload.role == "geometry" for payload in package.payloads):
+    # A semantic-only package is legitimate -- nothing forces a geometry source to be installed --
+    # but the absence is reported rather than left for a consumer to discover at draw time.
+    geometry_payloads = {
+        payload.id: payload for payload in package.payloads if payload.role == "geometry"
+    }
+    if not geometry_payloads:
         warnings.append(
             "no geometry payloads: this is the semantic half only, enough for selection, "
             "filtering and property inspection but not for rendering"
         )
+    else:
+        drawable = sum(1 for node in package.nodes if node.geometry)
+        if not drawable:
+            errors.append("geometry payloads are declared but no node references one")
+        elif drawable < len(package.nodes):
+            warnings.append(
+                f"{len(package.nodes) - drawable} of {len(package.nodes)} nodes carry no "
+                "geometry; they are selectable and queryable but will not draw"
+            )
+
+    for node in package.nodes:
+        for ref in node.geometry:
+            payload = geometry_payloads.get(ref.payload_id)
+            if payload is None:
+                errors.append(
+                    f'node "{node.global_id}" points at "{ref.payload_id}", '
+                    "which is not a geometry payload"
+                )
+                break
+            # An index past the end of the chunk's directory reads whatever follows it in the
+            # buffer. That draws something, which is worse than drawing nothing.
+            if payload.mesh_count is not None and ref.geometry_index >= payload.mesh_count:
+                errors.append(
+                    f'node "{node.global_id}" wants mesh {ref.geometry_index} of '
+                    f'"{ref.payload_id}", which holds {payload.mesh_count}'
+                )
+                break
     if package.source_units != "m":
         warnings.append(
             f'source units were "{package.source_units}"; coordinates must already be metres'
@@ -330,6 +407,15 @@ def to_manifest(package: ScenePackage) -> dict[str, Any]:
                 ],
                 "payloadId": node.payload_id,
                 "geometryIndex": node.geometry_index,
+                "geometry": [
+                    {
+                        "payloadId": ref.payload_id,
+                        "geometryIndex": ref.geometry_index,
+                        "lod": ref.lod,
+                        "faceCount": ref.face_count,
+                    }
+                    for ref in node.geometry
+                ],
             }
             for node in package.nodes
         ],
@@ -340,6 +426,8 @@ def to_manifest(package: ScenePackage) -> dict[str, Any]:
                 "path": payload.path,
                 "encoding": payload.encoding,
                 "byteLength": payload.byte_length,
+                "lod": payload.lod,
+                "meshCount": payload.mesh_count,
             }
             for payload in package.payloads
         ],
