@@ -43,10 +43,11 @@ jobs:
         # and the whole point of the job would evaporate without anything going red.
         run: |
           python -c "
-          from massingviser.adapters import available, missing
+          from massingviser.adapters import REQUIREMENTS, available, missing
           assert available() == (), f'expected no extras, found {available()}'
-          assert set(missing()) == {'ifc', 'solids', 'crs'}, missing()
-          print('no extras present, as intended')
+          # Derived from the registry, not hardcoded: adding an adapter must not break this job.
+          assert set(missing()) == set(REQUIREMENTS), (set(missing()), set(REQUIREMENTS))
+          print(f'no extras present, as intended; {len(REQUIREMENTS)} declared')
           "
       - run: pytest
 
@@ -68,11 +69,11 @@ jobs:
       - name: Every extra is installed
         run: |
           python -c "
-          from massingviser.adapters import available, missing
+          from massingviser.adapters import REQUIREMENTS, available, missing
           # missing() maps adapter -> why it could not load, so a failure names the reason.
           assert not missing(), f'extras failed to install: {missing()}'
-          assert available() == ('crs', 'ifc', 'solids'), available()
-          print('all extras present')
+          assert set(available()) == set(REQUIREMENTS), (set(available()), set(REQUIREMENTS))
+          print(f'all {len(REQUIREMENTS)} adapters present')
           "
       - run: pytest
 

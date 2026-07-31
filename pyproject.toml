@@ -31,6 +31,9 @@ dependencies = ["viser>=1.0.0,<2.0.0", "numpy>=1.24,<3.0.0"]
 [project.optional-dependencies]
 # Server-side IFC: parsing, tessellation, property and quantity sets.
 ifc = ["ifcopenshell>=0.8.0"]
+# Writing IFC. Same dependency, named separately so the hint `adapters.load` prints when the
+# writer is missing names an extra that actually exists.
+ifc_write = ["ifcopenshell>=0.8.0"]
 # Narrow-phase clash: real solid intersection rather than bounding boxes.
 solids = ["trimesh>=4.0", "manifold3d>=2.0"]
 # Coordinate reference systems and georeference validation.
