@@ -25,6 +25,8 @@ from .contracts import (
     PromotionTarget,
 )
 from .geometry import (
+    apply_planar_rigid,
+    as_planar_rigid,
     compute_mass_metrics,
     floor_area_ratio,
     polygon_area,
@@ -464,6 +466,101 @@ class MassingServiceImpl:
 
         self._runtime.context.events.emit(MASSING_EVENTS.created, {"record": record})
         return ok(record)
+
+    async def transform(
+        self, id: Id, matrix: Sequence[float], *, rejoin: Id | None = None
+    ) -> Result[MassingObjectRecord, KernelError]:
+        """Move or rotate one mass, by rewriting the footprint it is extruded from.
+
+        A mass has no transform of its own -- it *is* its profile, extruded. So moving one means
+        moving its profile, and that is where the hazard lies: profiles are deliberately shared, so
+        that editing a footprint updates every option built on it. Moving a mass must not move its
+        siblings, so a shared profile is forked here and only this mass repointed at the copy.
+
+        Anything that is not a rotation about z plus a translation is refused by name. See
+        ``as_planar_rigid``: a tilt has no representation as a mass, and quietly dropping it would
+        report success for an edit that moved the building somewhere else.
+        """
+        existing = self._stores.masses.get(id)
+        if existing is None:
+            return err(_not_found("massing object", id))
+        if not existing.editable:
+            return err(
+                KernelError("COMMAND_FAILED", f'Massing object "{id}" is locked.', {"id": id})
+            )
+
+        # Undo of a transform that forked a shared profile. Applying the inverse matrix instead
+        # would put the mass back in the right place on the *wrong* profile -- geometrically
+        # identical, but no longer moving when its sibling's footprint is edited, which is the one
+        # thing sharing a profile is for.
+        if rejoin is not None and rejoin != existing.profile_id:
+            if not self._stores.profiles.has(rejoin):
+                return err(_not_found("profile", rejoin))
+            abandoned = existing.profile_id
+            rejoined = self._stores.masses.update(id, {"profile_id": rejoin})
+            if rejoined is None:
+                return err(_not_found("massing object", id))
+            if not any(other.profile_id == abandoned for other in self._stores.masses.all()):
+                self._stores.profiles.remove(abandoned)
+            reconcile_stories(self._runtime, self._stores, rejoined)
+            self._runtime.context.events.emit(MASSING_EVENTS.updated, {"record": rejoined})
+            return ok(rejoined)
+
+        rigid = as_planar_rigid(matrix)
+        if rigid is None:
+            return err(
+                KernelError(
+                    "COMMAND_FAILED",
+                    "A mass is a vertical extrusion, so it can be rotated about z and moved, and "
+                    "nothing else. This matrix is not that -- it tilts, scales, shears or "
+                    "projects.",
+                    {"id": id, "matrix": tuple(float(v) for v in matrix)},
+                )
+            )
+        cos, sin, dx, dy, dz = rigid
+
+        profile = self._stores.profiles.get(existing.profile_id)
+        if profile is None:
+            return err(_not_found("profile", existing.profile_id))
+
+        points = tuple(apply_planar_rigid(profile.points, cos, sin, dx, dy))
+        holes = tuple(tuple(apply_planar_rigid(hole, cos, sin, dx, dy)) for hole in profile.holes)
+        elevation = profile.base_elevation + dz
+
+        shared = any(
+            other.id != id and other.profile_id == profile.id for other in self._stores.masses.all()
+        )
+        if shared:
+            forked = ProfileRecord(
+                id=self._runtime.ids.next("profile"),
+                points=points,
+                closed=profile.closed,
+                name=profile.name,
+                holes=holes,
+                base_elevation=elevation,
+            )
+            self._stores.profiles.add(forked)
+            moved = self._stores.masses.update(id, {"profile_id": forked.id})
+            self._runtime.context.events.emit(MASSING_EVENTS.profile_created, {"record": forked})
+        else:
+            self._stores.profiles.update(
+                profile.id,
+                {"points": points, "holes": holes, "base_elevation": elevation},
+            )
+            moved = self._stores.masses.get(id)
+            updated_profile = self._stores.profiles.get(profile.id)
+            if updated_profile is not None:
+                self._runtime.context.events.emit(
+                    MASSING_EVENTS.profile_updated, {"record": updated_profile}
+                )
+
+        if moved is None:
+            return err(_not_found("massing object", id))
+        # The stories sit on the profile's plane, so a vertical move has to reach them too.
+        if dz:
+            reconcile_stories(self._runtime, self._stores, moved)
+        self._runtime.context.events.emit(MASSING_EVENTS.updated, {"record": moved})
+        return ok(moved)
 
     async def update(
         self, id: Id, changes: Mapping[str, Any]

@@ -20,6 +20,7 @@ from .contracts import (
     PromotionToken,
     StoryToken,
 )
+from .geometry import invert_planar_rigid
 from .services import (
     DEFAULT_STORY_HEIGHT,
     AppearanceServiceImpl,
@@ -212,6 +213,39 @@ def create_massing_plugin(
                 handler=duplicate_mass,
                 create_inverse=lambda _params, record: CommandInvocation(
                     MASSING_COMMANDS.remove_mass, {"id": record.id}
+                ),
+            )
+        )
+
+        async def transform_mass(params: Mapping[str, Any], _ctx: Any) -> dict[str, Any]:
+            mass_id = params["id"]
+            before = masses.get(mass_id)
+            moved = _unwrap(
+                await masses.transform(mass_id, params["matrix"], rejoin=params.get("rejoin"))
+            )
+            refresh(mass_id)
+            return {
+                "id": moved.id,
+                "matrix": tuple(float(v) for v in params["matrix"]),
+                # What the mass was extruded from before the move. If the transform forked a
+                # shared profile, undo has to put it back on the original rather than leave it on
+                # a private copy that happens to sit in the same place.
+                "profile_id": before.profile_id if before else moved.profile_id,
+            }
+
+        context.commands.register(
+            CommandDefinition(
+                id=MASSING_COMMANDS.transform_mass,
+                title="Move or rotate mass",
+                permission=MASSING_PERMISSIONS.edit,
+                handler=transform_mass,
+                create_inverse=lambda _params, result: CommandInvocation(
+                    MASSING_COMMANDS.transform_mass,
+                    {
+                        "id": result["id"],
+                        "matrix": invert_planar_rigid(result["matrix"]),
+                        "rejoin": result["profile_id"],
+                    },
                 ),
             )
         )

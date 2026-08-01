@@ -79,6 +79,11 @@ class MassingService(Protocol):
     async def duplicate(
         self, id: Id, *, name: str | None = None, option_set_id: Id | None = None
     ) -> Result[MassingObjectRecord, KernelError]: ...
+    #: Rotation about z plus a translation, as a column-major 4x4. Anything else is refused --
+    #: a mass is a vertical extrusion and a tilted one is not a mass.
+    async def transform(
+        self, id: Id, matrix: Sequence[float], *, rejoin: Id | None = None
+    ) -> Result[MassingObjectRecord, KernelError]: ...
 
 
 MassingToken: CapabilityToken[MassingService] = create_capability_token("massing.service")
@@ -224,6 +229,7 @@ class MASSING_COMMANDS:
     remove_mass = "massing.remove"
     restore_mass = "massing.restore"
     duplicate_mass = "massing.duplicate"
+    transform_mass = "massing.transform"
     set_story_count = "massing.stories.set-count"
     edit_stories = "massing.stories.edit"
     set_color = "massing.appearance.set-color"

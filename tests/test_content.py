@@ -790,7 +790,7 @@ async def test_an_edit_creates_a_real_mass_and_returns_its_id():
 
 
 async def test_an_operation_the_backend_cannot_perform_is_refused_by_name():
-    """Massing cannot move a mass. Reporting success for an edit that did nothing is worse."""
+    """`modify` has no massing equivalent. Reporting success for an edit that did nothing is worse."""
     from massingviser.plugins.authoring import EditOperation
     from massingviser.schema import ElementRef
 
@@ -1069,4 +1069,120 @@ async def test_a_distance_constraint_over_three_elements_is_ambiguous_not_satisf
     assert not backend.evaluate_constraint(
         ConstraintRecord(id="2", kind="distance", value=40.0, elements=tuple(ref), tolerance=0.01)
     )
+    await kernel.stop()
+
+
+async def test_an_authoring_move_actually_moves_the_mass():
+    """The backend used to refuse every transform. A `move` is now carried out for real."""
+    from massingviser.plugins.authoring import EditOperation, GeometryBackendToken
+    from massingviser.schema import ElementRef
+
+    kernel, edits, first, _ = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    before = backend._centroid(ElementRef("massing", first))
+
+    result = await edits.apply(
+        [
+            EditOperation(
+                kind="move",
+                element=ElementRef("massing", first),
+                transform=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 45.0, 0, 0, 1),
+            )
+        ]
+    )
+    assert result.ok
+    after = backend._centroid(ElementRef("massing", first))
+    assert after is not None and before is not None
+    assert after[0] == pytest.approx(before[0] + 45.0)
+    # Only x moved -- a translation that leaks into another axis is the classic column-major slip.
+    assert after[1] == pytest.approx(before[1])
+    assert after[2] == pytest.approx(before[2])
+    await kernel.stop()
+
+
+async def test_a_move_with_no_transform_is_refused_rather_than_treated_as_a_no_op():
+    from massingviser.plugins.authoring import EditOperation
+    from massingviser.schema import ElementRef
+
+    kernel, edits, first, _ = await _authored()
+    result = await edits.apply([EditOperation(kind="move", element=ElementRef("massing", first))])
+    assert not result.ok and "needs a transform" in result.error.message
+    await kernel.stop()
+
+
+async def test_a_move_massing_cannot_represent_still_fails_the_whole_edit():
+    """A tilt has no representation as a mass, so it is refused rather than flattened."""
+    from massingviser.plugins.authoring import EditOperation, GeometryBackendToken
+    from massingviser.schema import ElementRef
+
+    kernel, edits, first, _ = await _authored()
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    before = backend.current_version("massing")
+
+    result = await edits.apply(
+        [
+            EditOperation(
+                kind="move",
+                element=ElementRef("massing", first),
+                transform=(1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1),
+            )
+        ]
+    )
+    assert not result.ok
+    assert "vertical extrusion" in result.error.message
+    # And nothing moved on the way to refusing.
+    assert backend.current_version("massing") == before
+    await kernel.stop()
+
+
+async def test_discarding_a_session_puts_a_moved_mass_back():
+    """Revert applies the inverse, not the same transform again."""
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import (
+        AuthoringSessionToken,
+        EditCommandToken,
+        EditOperation,
+        GeometryBackendToken,
+    )
+    from massingviser.plugins.massing import MASSING_COMMANDS
+    from massingviser.schema import ElementRef
+
+    kernel = build_kernel()
+    await kernel.start()
+    sessions = kernel.capabilities.get(AuthoringSessionToken)
+    edits = kernel.capabilities.get(EditCommandToken)
+    # The mass is created outside any authoring session, so discarding the session below reverts
+    # the move and nothing else. Created inside it, the discard would simply delete the mass and
+    # the test would pass without the inverse transform ever running.
+    profile = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)]},
+        )
+    ).value
+    first = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "A", "profile_id": profile, "story_count": 3, "story_height": 3.5},
+        )
+    ).value.id
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    before = backend._centroid(ElementRef("massing", first))
+
+    session = (await sessions.open("massing")).value
+    await edits.apply(
+        [
+            EditOperation(
+                kind="move",
+                element=ElementRef("massing", first),
+                transform=(0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 12.0, 5.0, 0, 1),
+            )
+        ]
+    )
+    assert backend._centroid(ElementRef("massing", first))[0] != pytest.approx(before[0])
+
+    await sessions.discard(session.id)
+    after = backend._centroid(ElementRef("massing", first))
+    assert list(after) == pytest.approx(list(before), abs=1e-9)
     await kernel.stop()

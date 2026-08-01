@@ -260,6 +260,96 @@ class StoryGeometry:
     excluded_from_gfa: bool = False
 
 
+#: How far a matrix may stray from a rotation about z before it stops being one. Tight, because
+#: the point of the check is to refuse rather than approximate: a matrix that is nearly a rotation
+#: is not a rotation, and quietly treating it as one moves the building.
+RIGID_TOLERANCE = 1e-9
+
+
+def as_planar_rigid(
+    matrix: Sequence[float],
+) -> tuple[float, float, float, float, float] | None:
+    """Read a column-major 4x4 as a rotation about z and a translation.
+
+    Returns ``(cos, sin, dx, dy, dz)``, or ``None`` when the matrix is not that -- a rotation about
+    x or y, a scale, a shear or a projection all return ``None``.
+
+    A mass here is a vertical extrusion of a horizontal profile, so a rotation about z and a
+    translation are exactly the transforms that survive as another mass of the same kind. Tilting
+    one does not produce a mass with a different profile; it produces something massing cannot
+    represent at all. Approximating that -- dropping the tilt, or baking it into the footprint --
+    would answer with a building the caller did not ask for, so it is refused instead.
+    """
+    if len(matrix) != 16:
+        return None
+    values = [float(v) for v in matrix]
+    # Column-major: column c, row r is at 4c + r.
+    if any(abs(values[i]) > RIGID_TOLERANCE for i in (2, 6, 8, 9)):
+        return None  # z mixes with x or y -- a tilt.
+    if abs(values[10] - 1.0) > RIGID_TOLERANCE:
+        return None  # z is scaled or mirrored.
+    if any(abs(values[i]) > RIGID_TOLERANCE for i in (3, 7, 11)):
+        return None  # a projective row.
+    if abs(values[15] - 1.0) > RIGID_TOLERANCE:
+        return None
+
+    cos, sin = values[0], values[1]
+    # The second column must be the first rotated a quarter turn, and the pair must be unit
+    # length. Together these rule out scale, shear and mirroring, which the first column alone
+    # cannot: (2, 0) and (0, 2) is a uniform scale and passes any per-column test you write.
+    if abs(values[4] + sin) > RIGID_TOLERANCE or abs(values[5] - cos) > RIGID_TOLERANCE:
+        return None
+    if abs(cos * cos + sin * sin - 1.0) > RIGID_TOLERANCE:
+        return None
+    return (cos, sin, values[12], values[13], values[14])
+
+
+def invert_planar_rigid(matrix: Sequence[float]) -> tuple[float, ...]:
+    """The transform that undoes ``matrix``.
+
+    Built from the decomposition rather than by inverting the 4x4 numerically. The matrix that
+    comes back is the exact inverse -- a rotation's inverse is its transpose, with no solve and no
+    conditioning -- so the only error left is in applying it, and that does not accumulate: a mass
+    moved and unmoved fifty times comes back within about 1e-13 m, which is nine orders below the
+    tolerance anything downstream measures at.
+    """
+    rigid = as_planar_rigid(matrix)
+    if rigid is None:
+        raise ValueError("Not a rotation about z with a translation; cannot be inverted as one.")
+    cos, sin, dx, dy, dz = rigid
+    # R is orthonormal, so its inverse is its transpose; the translation comes back through it.
+    return (
+        cos,
+        -sin,
+        0.0,
+        0.0,
+        sin,
+        cos,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        -(cos * dx + sin * dy),
+        -(-sin * dx + cos * dy),
+        -dz,
+        1.0,
+    )
+
+
+def apply_planar_rigid(
+    points: Sequence[Sequence[float]], cos: float, sin: float, dx: float, dy: float
+) -> list[tuple[float, float, float]]:
+    """Rotate about the world z axis, then translate. Z is carried through untouched."""
+    moved: list[tuple[float, float, float]] = []
+    for point in points:
+        x, y = float(point[0]), float(point[1])
+        z = float(point[2]) if len(point) > 2 else 0.0
+        moved.append((cos * x - sin * y + dx, sin * x + cos * y + dy, z))
+    return moved
+
+
 def story_elevations(heights: Sequence[float], base_elevation: float = 0.0) -> list[float]:
     """Cumulative base elevation of each story."""
     elevations: list[float] = []

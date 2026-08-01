@@ -833,16 +833,17 @@ class _MassingGeometryBackend:
     through the command bus, so an authoring edit is undoable by the same mechanism as any other
     edit, and it evaluates constraints against real coordinates.
 
-    What it is **not** is a solid modeller. Massing has no operation that moves or rotates a mass,
-    so an edit carrying a transform is refused by name rather than accepted and dropped -- an
-    authoring session that reports success for an edit that did nothing is worse than one that
-    refuses it.
+    A ``move`` carrying a rotation about z and a translation is now carried out for real, through
+    ``massing.transform``. What it is still **not** is a solid modeller: a mass is a vertical
+    extrusion, so a transform that tilts, scales or shears it has no representation as a mass and
+    is refused by name rather than approximated -- an authoring session that reports success for an
+    edit that put the building somewhere else is worse than one that refuses it.
     """
 
-    __slots__ = ("_kernel", "_published", "_snapshots")
+    __slots__ = ("_kernel", "_published", "_snapshots", "_before_move")
 
     #: Operations massing can actually carry out.
-    SUPPORTED = frozenset({"create", "delete", "restore"})
+    SUPPORTED = frozenset({"create", "delete", "restore", "move"})
 
     def __init__(self, kernel: Kernel[Any]) -> None:
         self._kernel = kernel
@@ -851,6 +852,11 @@ class _MassingGeometryBackend:
         #: A conflict check needs the *element's* state at a point in time, and a single model-wide
         #: hash cannot answer that -- see `changed_since`.
         self._snapshots: dict[str, dict[str, str]] = {}
+        #: Mass id -> the profile it was extruded from before this session first moved it. A move
+        #: forks a shared profile, and reverting by the inverse matrix alone would put the mass
+        #: back in the right place on a private copy -- silently unlinked from the sibling whose
+        #: footprint it used to follow.
+        self._before_move: dict[str, str] = {}
 
     # -- geometry state ------------------------------------------------------------------------
 
@@ -993,6 +999,26 @@ class _MassingGeometryBackend:
         target = getattr(operation.element, "global_id", None)
         if not target:
             return err(KernelError("COMMAND_FAILED", f"A {operation.kind} needs an element.", {}))
+
+        if operation.kind == "move":
+            if not operation.transform:
+                return err(
+                    KernelError(
+                        "COMMAND_FAILED",
+                        "A move needs a transform. One without is not a move that did nothing; "
+                        "it is a caller that meant something this backend cannot guess.",
+                        {"id": target},
+                    )
+                )
+            moved = await commands.execute(
+                MASSING_COMMANDS.transform_mass, {"id": target, "matrix": operation.transform}
+            )
+            if not moved.ok:
+                return err(moved.error)
+            if isinstance(moved.value, Mapping) and target not in self._before_move:
+                self._before_move[target] = str(moved.value.get("profile_id"))
+            return ok(ElementRef(MASSING_MODEL_ID, target))
+
         command = (
             MASSING_COMMANDS.remove_mass
             if operation.kind == "delete"
@@ -1019,6 +1045,25 @@ class _MassingGeometryBackend:
             elif operation.kind == "delete":
                 await self._kernel.commands.execute(
                     MASSING_COMMANDS.restore_mass, {"id": operation.element.global_id}
+                )
+            elif operation.kind == "move" and operation.transform:
+                # The inverse transform, not the same one again. Computed in closed form so a
+                # session moved and reverted repeatedly lands back on its original coordinates
+                # rather than drifting by a rounding error each round.
+                from .plugins.massing.geometry import invert_planar_rigid
+
+                try:
+                    inverse = invert_planar_rigid(operation.transform)
+                except ValueError:
+                    continue  # Never applied in the first place, so there is nothing to undo.
+                mass_id = operation.element.global_id
+                await self._kernel.commands.execute(
+                    MASSING_COMMANDS.transform_mass,
+                    {
+                        "id": mass_id,
+                        "matrix": inverse,
+                        "rejoin": self._before_move.pop(mass_id, None),
+                    },
                 )
         self._absorb([o.element for o in operations if o.element is not None])
         return ok(None)

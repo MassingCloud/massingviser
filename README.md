@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 724, the Python side
+python -m pytest                          # 744, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**746 tests.** Organised by the claim each defends:
+**766 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -433,28 +433,35 @@ ruff check . && ruff format --check . && python -m pytest
 
 Stated plainly, in the spirit of the repository this is ported from.
 
-- **The authoring backend is massing-backed, not a solid modeller.** It creates, deletes and
-  restores real records through the command bus and measures constraints against real coordinates,
-  but massing has no operation that moves or rotates a mass — so an edit carrying a transform is
-  **refused by name** rather than accepted and silently dropped.
-- **SHACL is Core only.** Cardinality, datatype, class, node kind, ranges, string tests and
-  enumerations, over single-predicate paths. No SPARQL constraints, no property path expressions,
-  no qualified shapes. A constraint the engine cannot evaluate is *reported* — `report.complete`
-  goes false and names it — because an engine that skips one and answers "conforms" has reported on
-  a shape it never checked.
-- **The vendor programme readers cover the programme, not the calendar.** Tasks, dates, progress,
-  WBS, criticality and the dependency graph are read; working calendars, resource assignments and
+- **The authoring backend is massing-backed, not a solid modeller.** It creates, deletes, restores
+  and now **moves** real records through the command bus, and measures constraints against real
+  coordinates. A mass is a vertical extrusion, so a `move` carrying a rotation about z and a
+  translation is carried out for real -- by rewriting the footprint it is extruded from, forking
+  the profile first when another option shares it. Anything else a 4x4 can express -- a tilt, a
+  scale, a shear -- has no representation as a mass and is **refused by name** rather than
+  approximated. `modify` has no massing equivalent at all and is refused the same way.
+- **SHACL has no SPARQL.** Core constraints, the logical combinators (`sh:node`, `sh:not`,
+  `sh:and`, `sh:or`, `sh:xone`), qualified value shapes and property paths (inverse, sequence,
+  alternative) are all evaluated. `sh:sparql` is not, because it means an entire query language,
+  and a constraint the engine cannot evaluate is *reported* -- `report.complete` goes false and
+  names it -- because an engine that skips one and answers "conforms" has reported on a shape it
+  never checked.
+- **The vendor programme readers do not read resources.** Tasks, dates, progress, WBS, criticality,
+  the dependency graph and the working calendars are read, so lag converts through the calendar the
+  file names and a cashflow curve puts no money inside a shutdown. Resource assignments and
   constraint arithmetic are left in the file rather than half-parsed.
-- **Instancing is per representation, not per shape.** Elements sharing an IFC representation
-  collapse to one mesh and many transforms. Two elements that happen to be *geometrically* identical
-  but were authored separately still travel twice — recognising that needs a shape descriptor and a
-  tolerance, and a wrong tolerance silently merges two things that differ.
 - **IFC writing is tessellated.** Solids go out as `IfcPolygonalFaceSet`, not as swept solids or
-  B-reps, because triangles are what the platform holds. Materials, types and classification are
-  not written, since nothing here holds them.
-- **Massing geometry is not instanced.** Every storey ships its own mesh even where a tower repeats
-  one floor plate forty times. The pipeline supports it; the massing bridge does not yet key on a
-  shared profile.
+  B-reps, because triangles are what the platform holds. Materials are written; types and
+  classification are not, because nothing here holds them.
+- **Massing geometry is not instanced across masses.** A tower's repeated floor plate ships once
+  and is placed per storey, and an imported model collapses identical shapes even when they were
+  authored separately -- exactly, on a one-micron grid, so a real difference can never merge. What
+  is not shared is a shape common to two *different* masses; recognising that needs the massing
+  bridge to key on the profile rather than on the mass.
+- **Rotation is not normalised when deduplicating shapes.** Two identical boxes that differ only by
+  a rotation still travel twice. Collapsing them means choosing a canonical orientation, and a box's
+  principal axes are degenerate -- any rule for picking them merges some pair that genuinely
+  differs, which is worse than sending one mesh too many.
 
 ## Relationship to `massingifc`
 
