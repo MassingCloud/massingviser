@@ -452,13 +452,16 @@ class IfcModelSource:
     point of GlobalId being the identity.
     """
 
-    __slots__ = ("_model", "_offsets")
+    __slots__ = ("_model", "_deduplicated")
 
     def __init__(self, model: IfcModel) -> None:
         self._model = model
-        #: GlobalId -> the shift `deduplicate_by_translation` applied to its shape, folded back
-        #: into the placement so the element still lands where the file put it.
-        self._offsets: dict[str, tuple[float, float, float]] = {}
+        #: The shape dedup, computed once on first need. Memoised rather than computed in
+        #: `instances`, because `nodes` needs the same answer: the dedup moves shapes to their own
+        #: corner, and a placement that does not know that is displaced by exactly that corner.
+        #: Computing it inside `instances` alone made this object return two different placements
+        #: for the same element depending on which method the caller happened to reach first.
+        self._deduplicated: tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None = None
 
     # -- estimating.ModelElementSource --------------------------------------------------------
 
@@ -594,7 +597,7 @@ class IfcModelSource:
         element = self._model.get(global_id)
         if element is None:
             return IDENTITY_TRANSFORM
-        offset = getattr(self, "_offsets", {}).get(global_id)
+        offset = self._deduplicate()[2].get(global_id)
         return compose_translation(element.transform, offset) if offset else element.transform
 
     def instances(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], dict[str, str]]:
@@ -605,6 +608,14 @@ class IfcModelSource:
         travel as 4x4s in the manifest -- which is the whole difference between sending a facade
         and sending a window.
         """
+        shapes, resolved, _offsets = self._deduplicate()
+        return shapes, resolved
+
+    def _deduplicate(self) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
+        """``(shapes, global id -> shape key, global id -> the shift its shape was given)``."""
+        if self._deduplicated is not None:
+            return self._deduplicated
+
         by_representation: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         belongs: dict[str, str] = {}
         for element in self._model.elements:
@@ -626,18 +637,17 @@ class IfcModelSource:
         # tolerant, so it cannot merge two things that differ.
         from ..geometry import deduplicate_by_translation
 
-        shapes, offsets = deduplicate_by_translation(by_representation)
+        shapes, placed = deduplicate_by_translation(by_representation)
         resolved = {
-            global_id: offsets[key][0] for global_id, key in belongs.items() if key in offsets
+            global_id: placed[key][0] for global_id, key in belongs.items() if key in placed
         }
         # The dedup moved each shape to its own corner, so the element's placement has to make up
         # the difference. Without this every element whose local geometry did not already start at
         # the origin lands displaced by its own bounding-box corner -- a shift that looks like a
         # modelling error rather than a bug here.
-        self._offsets = {
-            global_id: offsets[key][1] for global_id, key in belongs.items() if key in offsets
-        }
-        return shapes, resolved
+        offsets = {global_id: placed[key][1] for global_id, key in belongs.items() if key in placed}
+        self._deduplicated = (shapes, resolved, offsets)
+        return self._deduplicated
 
     def transforms(self) -> dict[str, tuple[float, ...]]:
         return {element.global_id: element.transform for element in self._model.elements}

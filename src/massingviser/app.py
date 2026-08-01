@@ -944,6 +944,10 @@ class _MassingGeometryBackend:
 
     async def publish(self, model_id: Any, version: str) -> Any:
         self._published[str(model_id)] = version
+        # Published edits are past reverting, so the profiles they moved off are no longer the
+        # ones to rejoin. Keeping them would send the *next* session's undo back to a footprint
+        # two moves stale -- geometrically plausible, and the wrong building.
+        self._before_move.clear()
         return ok(None)
 
     # -- edits ---------------------------------------------------------------------------------

@@ -920,15 +920,42 @@ def test_dedup_leaves_every_element_exactly_where_the_file_put_it(separately_aut
     expected = {element.global_id: element.box for element in model.elements}
 
     shapes, belongs = source.instances()
-    assert any(offset != (0.0, 0.0, 0.0) for offset in source._offsets.values()), (
-        "the fixture must exercise a non-zero offset or it proves nothing"
-    )
+    # Measured through the public method rather than the offset table: if no placement differs
+    # from the raw one the fixture is not exercising an offset and the assertions below prove
+    # nothing about the composition.
+    assert any(
+        source.placement_of(element.global_id) != element.transform for element in model.elements
+    ), "the fixture must exercise a non-zero offset or it proves nothing"
 
     for node in source.nodes():
         vertices = ifc.place(shapes[belongs[node.global_id]][0], node.transform)
         box = expected[node.global_id]
         assert vertices.min(axis=0) == pytest.approx(np.asarray(box.min), abs=1e-6)
         assert vertices.max(axis=0) == pytest.approx(np.asarray(box.max), abs=1e-6)
+
+
+@ifc_only
+def test_the_placement_does_not_depend_on_which_method_is_called_first(separately_authored_ifc):
+    """Two sources, same file, opposite call order. Anything else is a bug that hides behind luck.
+
+    The dedup moves shapes to their own corner and the placement makes up the difference. When
+    that was computed inside `instances`, asking a fresh source for `nodes` first got placements
+    that knew nothing about it -- every element displaced by its own bounding-box corner, and the
+    composition root happened to call them in the order that hid it.
+    """
+    ifc = load("ifc")
+
+    geometry_first = ifc.IfcModelSource(ifc.open_ifc(separately_authored_ifc, model_id="m1"))
+    geometry_first.instances()
+    after_geometry = {node.global_id: node.transform for node in geometry_first.nodes()}
+
+    nodes_first = ifc.IfcModelSource(ifc.open_ifc(separately_authored_ifc, model_id="m1"))
+    before_geometry = {node.global_id: node.transform for node in nodes_first.nodes()}
+    nodes_first.instances()
+
+    assert set(after_geometry) == set(before_geometry)
+    for global_id, transform in after_geometry.items():
+        assert list(before_geometry[global_id]) == pytest.approx(list(transform), abs=1e-12)
 
 
 @ifc_only  # pure maths, but it lives in the IFC adapter and that module needs IfcOpenShell

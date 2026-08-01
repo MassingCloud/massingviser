@@ -1186,3 +1186,62 @@ async def test_discarding_a_session_puts_a_moved_mass_back():
     after = backend._centroid(ElementRef("massing", first))
     assert list(after) == pytest.approx(list(before), abs=1e-9)
     await kernel.stop()
+
+
+async def test_reverting_a_move_does_not_undo_a_published_one_as_well():
+    """A move forks a shared profile, and undo has to rejoin the *right* one.
+
+    Publish, then move again, then revert. The revert owns only the second move -- rejoining the
+    footprint the first move left behind would silently undo a published edit, and the mass would
+    land somewhere entirely plausible and wrong.
+    """
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import (
+        EditOperation,
+        GeometryBackendToken,
+    )
+    from massingviser.plugins.massing import MASSING_COMMANDS
+    from massingviser.schema import ElementRef
+
+    kernel = build_kernel()
+    await kernel.start()
+    # Two masses on one profile -- the sharing is what makes the first move fork.
+    profile = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)]},
+        )
+    ).value
+    first = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "A", "profile_id": profile, "story_count": 2, "story_height": 3.5},
+        )
+    ).value.id
+    await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {"name": "B", "profile_id": profile, "story_count": 2, "story_height": 3.5},
+    )
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    ref = ElementRef("massing", first)
+    origin = backend._centroid(ref)
+
+    def move(dx):
+        return EditOperation(
+            kind="move",
+            element=ref,
+            transform=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, float(dx), 0, 0, 1),
+        )
+
+    assert (await backend.apply([move(40.0)])).ok
+    published = backend._centroid(ref)
+    assert published[0] == pytest.approx(origin[0] + 40.0)
+    await backend.publish("massing", backend.current_version("massing"))
+
+    assert (await backend.apply([move(7.0)])).ok
+    await backend.revert([move(7.0)])
+
+    after = backend._centroid(ref)
+    assert after[0] == pytest.approx(published[0]), "the published move must survive the revert"
+    await kernel.stop()
