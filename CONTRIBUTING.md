@@ -2,7 +2,7 @@
 
 ```bash
 pip install -e ".[all,dev]"
-pytest                                   # 652
+pytest                                   # 691
 cd web && npm ci && npm run test:all     # 22 — readers, then a real browser
 ```
 
@@ -33,6 +33,13 @@ codebase composes.
 ---
 
 ## Two conventions worth adopting before you write anything
+
+**Some tests state a claim about *any* input.** `tests/test_properties.py` generates structured
+random input and asserts invariants — key encoding round-trips, the takeoff evaluator never raises,
+merge conflict detection does not depend on argument order. Seeds are fixed so a failure is
+reproducible and CI cannot go red on an unrelated commit; widen the search locally with
+`MASSINGVISER_FUZZ_ROUNDS=5000 pytest tests/test_properties.py`. If you add one, **prove it can
+fail** by injecting a fault first — a property that always passes is worth nothing.
 
 **A test name states the claim it defends.** Not `test_import_schedule`, but
 `test_xer_identity_is_the_activity_code_not_the_internal_id`. When it fails a year from now, the

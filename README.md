@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 652, the Python side
+python -m pytest                          # 691, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**674 tests.** Organised by the claim each defends:
+**713 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -397,6 +397,7 @@ cd web && npm ci && npm run test:all      # 22, the browser side
 | `test_web.py` | The four HTTP routes over real sockets: content types, cache headers, malformed input, path escapes, and a cache that cannot be read half-updated |
 | `web/test/mvmesh.test.mjs` | The **JavaScript** reader, against buffers the Python encoder wrote |
 | `web/test/render.test.mjs` | A real server, the real page, headless Chrome, and the framebuffer read back |
+| `test_properties.py` | Invariants over randomised input: key encoding, semver ordering, an evaluator that cannot be made to raise, money reversibility, mesh round-trips, merge symmetry, syntax round-trips |
 | `test_architecture.py` | The five rules above, by parsing imports |
 
 The architecture checks are mutation-tested: injecting a plugin cross-import, an `import viser`
@@ -406,8 +407,8 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 619 pass, 33 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 652 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 658 pass, 33 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 691 pass |
 | `web` | Node 22 + headless Chrome — fixtures, readers, then pixels | 22 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
