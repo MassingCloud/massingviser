@@ -269,14 +269,14 @@ class _PlannedScheduleBasis:
         """Which curve the last call would return. Surfaced so a report can say so."""
         return "programme" if self._spans() else "nominal"
 
-    def _spans(self) -> list[tuple[datetime, datetime]]:
+    def _spans(self) -> list[tuple[datetime, datetime, Any]]:
         tasks = self._tasks()
         # A summary task spans its children and represents none of its own work. Counting both puts
         # the roll-up's duration on top of the detail underneath it, which loads the front of the
         # curve with cost that nothing builds. Only leaves carry work.
         parents = {task.parent_id for task in tasks if task.parent_id}
 
-        spans = []
+        spans: list[tuple[datetime, datetime, Any]] = []
         for task in tasks:
             if task.id in parents:
                 continue
@@ -284,21 +284,37 @@ class _PlannedScheduleBasis:
             finish = _parse_date(task.planned_finish)
             if start is None or finish is None or finish <= start:
                 continue
-            spans.append((start, finish))
+            spans.append((start, finish, self._calendar_for(task)))
         return spans
+
+    def _calendar_for(self, task: Any) -> Any:
+        schedule = self._kernel.capabilities.get(ScheduleImportToken)
+        resolve = getattr(schedule, "calendar_for", None)
+        return resolve(task) if resolve else None
 
     def periods(self, unit: str = "month") -> Sequence[SchedulePeriod]:
         spans = self._spans()
         if not spans:
             return self._nominal.periods(unit)
 
-        horizon = max(finish for _, finish in spans)
-        cursor = _period_start(min(start for start, _ in spans), unit)
+        horizon = max(finish for _, finish, _ in spans)
+        cursor = _period_start(min(start for start, _, _ in spans), unit)
         buckets: list[tuple[datetime, datetime, float]] = []
         while cursor < horizon:
             end = _next_period(cursor, unit)
             share = 0.0
-            for start, finish in spans:
+            for start, finish, calendar in spans:
+                # Spread over the task's **working** days, so a shutdown or a weekend carries no
+                # cost. Falls back to calendar time only when the programme named no calendar --
+                # in which case there is nothing to say which days are worked.
+                if calendar is not None:
+                    worked = calendar.working_days(start.date(), finish.date())
+                    if worked:
+                        inside = calendar.working_days(
+                            max(start, cursor).date(), min(finish, end).date()
+                        )
+                        share += inside / worked
+                        continue
                 overlap = (min(finish, end) - max(start, cursor)).total_seconds()
                 if overlap > 0:
                     # Share of *this task's* duration, so a six-month task and a one-week task

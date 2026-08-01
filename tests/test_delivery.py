@@ -787,7 +787,7 @@ async def test_malformed_xml_is_reported_not_raised(harness):
 def test_a_windows_encoded_export_still_reads():
     """XER out of P6 is routinely cp1252, and an en-dash in a task name must not fail an import."""
     payload = XER.replace("Piling", "Piling – phase 1").encode("cp1252")
-    rows = parse_xer(payload)
+    rows, _calendars = parse_xer(payload)
     assert rows[0]["name"] == "Piling – phase 1"
 
 
@@ -797,6 +797,184 @@ def test_a_short_xer_row_is_padded_not_dropped():
         "%R\t3\t100\tA1020\tFrame\t2026-04-07 08:00\t2026-07-07 17:00\t0\tN",
         "%R\t3\t100\tA1020\tFrame\t2026-04-07 08:00\t2026-07-07 17:00",
     )
-    rows = parse_xer(truncated)
+    rows, _calendars = parse_xer(truncated)
     assert len(rows) == 3
     assert rows[2]["critical"] is False
+
+
+# ---------------------------------------------------------------------------------------------
+# Working calendars
+#
+# A programme's dates only mean something against a calendar. Two tasks spanning the same month are
+# not the same work if one runs six days and the other five through a shutdown, and a curve that
+# spreads cost over calendar days puts money on Christmas Day.
+# ---------------------------------------------------------------------------------------------
+
+
+def _excel_serial(day):
+    from datetime import date as _date
+
+    return (day - _date(1899, 12, 30)).days
+
+
+def _xer_with_calendar():
+    from datetime import date
+
+    shutdown = [_excel_serial(date(2026, 12, day)) for day in (24, 25, 28, 29, 30, 31)]
+    week = "".join(f"(0||{n}()(0||0(s|08:00|f|16:00)))" for n in (2, 3, 4, 5, 6))
+    exceptions = "".join(f"(0||d|{serial}())" for serial in shutdown)
+    blob = f"(0||CalendarData()(0||DaysOfWeek(){week})(0||Exceptions(){exceptions}))"
+    return "ERMHDR\t19.12\t2026-01-01\n" + "\n".join(
+        [
+            "%T\tCALENDAR",
+            "%F\tclndr_id\tclndr_name\tday_hr_cnt\tclndr_data",
+            f"%R\t1\tSite 5-day\t6\t{blob}",
+            "%T\tTASK",
+            "%F\ttask_id\tclndr_id\ttask_code\ttask_name\ttarget_start_date\ttarget_end_date",
+            "%R\t10\t1\tA1000\tFitout\t2026-12-01 08:00\t2027-01-31 17:00",
+            "%R\t20\t1\tA1010\tSnag\t2027-01-04 08:00\t2027-01-29 17:00",
+            "%T\tTASKPRED",
+            "%F\ttask_id\tpred_task_id\tpred_type\tlag_hr_cnt",
+            "%R\t20\t10\tPR_FS\t12",
+            "%E",
+        ]
+    )
+
+
+MSPDI_WITH_CALENDAR = """<?xml version="1.0"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+ <Calendars>
+  <Calendar><UID>1</UID><Name>Six day</Name><HoursPerDay>7.5</HoursPerDay>
+   <WeekDays>
+    <WeekDay><DayType>1</DayType><DayWorking>0</DayWorking></WeekDay>
+    <WeekDay><DayType>2</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayType>3</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayType>4</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayType>5</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayType>6</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayType>7</DayType><DayWorking>1</DayWorking></WeekDay>
+    <WeekDay><DayWorking>0</DayWorking>
+      <TimePeriod><FromDate>2026-12-24T00:00:00</FromDate><ToDate>2026-12-26T23:59:00</ToDate></TimePeriod>
+    </WeekDay>
+   </WeekDays>
+  </Calendar>
+ </Calendars>
+ <Tasks>
+  <Task><UID>0</UID><Name>P</Name><Start>2026-12-01T08:00:00</Start>
+    <Finish>2027-01-31T17:00:00</Finish><OutlineLevel>0</OutlineLevel></Task>
+  <Task><UID>1</UID><Name>Fitout</Name><WBS>1</WBS><OutlineLevel>1</OutlineLevel>
+    <CalendarUID>1</CalendarUID><Start>2026-12-01T08:00:00</Start>
+    <Finish>2027-01-31T17:00:00</Finish></Task>
+ </Tasks>
+</Project>"""
+
+
+async def test_a_p6_calendar_is_read_from_its_blob(harness):
+    """`clndr_data` is a nested parenthesised blob, not a table."""
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    assert (await schedule.import_schedule(_xer_with_calendar(), "xer")).ok
+
+    calendar = schedule.calendars()["1"]
+    assert calendar.name == "Site 5-day"
+    assert sorted(calendar.working_weekdays) == [0, 1, 2, 3, 4]  # Monday to Friday
+    assert len(calendar.holidays) == 6
+    assert calendar.hours_per_day == 6.0
+
+
+async def test_p6_lag_converts_through_the_task_calendar_not_a_constant(harness):
+    """12 hours of lag is two days on a six-hour day, not one and a half."""
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    await schedule.import_schedule(_xer_with_calendar(), "xer")
+    link = schedule.dependencies()[0]
+    assert link.lag == pytest.approx(2.0)
+
+
+async def test_a_task_resolves_to_the_calendar_its_file_named(harness):
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    await schedule.import_schedule(_xer_with_calendar(), "xer")
+    task = next(t for t in schedule.tasks() if t.id == "A1000")
+    assert task.calendar_id == "1"
+    assert schedule.calendar_for(task).name == "Site 5-day"
+
+
+async def test_a_task_naming_no_calendar_falls_back_rather_than_failing(harness):
+    """A broken export is not a reason to refuse the whole programme."""
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    await schedule.import_schedule(
+        "id,name,planned_start,planned_finish\nT,A,2026-01-01,2026-02-01\n", "csv"
+    )
+    task = schedule.tasks()[0]
+    assert task.calendar_id is None
+    assert schedule.calendar_for(task).name == "Standard (assumed)"
+
+
+async def test_an_mspdi_calendar_reads_its_week_hours_and_exceptions(harness):
+    from datetime import date
+
+    await harness.load(planning_plugin)
+    schedule = harness.capability(ScheduleImportToken)
+    assert (await schedule.import_schedule(MSPDI_WITH_CALENDAR, "mspdi")).ok
+
+    calendar = schedule.calendars()["1"]
+    assert calendar.hours_per_day == 7.5
+    # Monday to Saturday: MSPDI numbers days 1..7 from Sunday, `date.weekday()` 0..6 from Monday.
+    assert sorted(calendar.working_weekdays) == [0, 1, 2, 3, 4, 5]
+    assert calendar.holidays == frozenset(
+        {date(2026, 12, 24), date(2026, 12, 25), date(2026, 12, 26)}
+    )
+
+
+def test_working_days_excludes_weekends_and_the_shutdown():
+    from datetime import date
+
+    from massingviser.plugins.planning.calendars import WorkCalendar
+
+    calendar = WorkCalendar(
+        id="c", holidays=frozenset({date(2026, 12, d) for d in (24, 25, 28, 29, 30, 31)})
+    )
+    # December 2026 has 23 weekdays; six of them are shut.
+    assert calendar.working_days(date(2026, 12, 1), date(2027, 1, 1)) == 17
+
+
+def test_the_span_is_half_open():
+    """A one-day task on a Friday is one day, not two."""
+    from datetime import date
+
+    from massingviser.plugins.planning.calendars import WorkCalendar
+
+    calendar = WorkCalendar(id="c")
+    friday = date(2026, 12, 4)
+    assert calendar.working_days(friday, date(2026, 12, 5)) == 1
+    assert calendar.working_days(friday, friday) == 0
+
+
+def test_a_calendar_with_no_working_day_does_not_divide_by_zero():
+    from datetime import date
+
+    from massingviser.plugins.planning.calendars import WorkCalendar
+
+    closed = WorkCalendar(id="c", working_weekdays=frozenset())
+    assert closed.working_days(date(2026, 1, 1), date(2027, 1, 1)) == 0
+    assert closed.hours_to_days(8.0) == pytest.approx(1.0)
+
+
+async def test_the_cashflow_curve_puts_no_cost_inside_a_shutdown(harness):
+    """The whole reason to read a calendar: a curve over calendar days pays for Christmas."""
+    from massingviser import build_kernel
+    from massingviser.plugins.estimating import ScheduleBasisToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await kernel.capabilities.get(ScheduleImportToken).import_schedule(_xer_with_calendar(), "xer")
+    periods = kernel.capabilities.get(ScheduleBasisToken).periods("month")
+
+    assert sum(period.weight for period in periods) == pytest.approx(1.0)
+    december = next(p for p in periods if p.start.startswith("2026-12"))
+    # 61 calendar days would give December 31/61 = 0.508. Working days give it less, because six
+    # of its weekdays are shut.
+    assert december.weight < 0.5
+    await kernel.stop()

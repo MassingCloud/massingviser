@@ -204,9 +204,33 @@ def create_default_migration_registry() -> MigrationRegistry:
     Declaring them all up front is what makes the forward-incompatibility guard work from the first
     release rather than from the first migration.
     """
-    from .schemas import CURRENT_VERSION
+    from .schemas import CURRENT_VERSION, SCHEMA
 
     registry = MigrationRegistry()
     for schema, version in CURRENT_VERSION.items():
         registry.declare(schema, version)
+
+    registry.register(
+        MigrationDefinition(
+            schema=SCHEMA.schedule_task,
+            from_version=1,
+            to_version=2,
+            migrate=_add_calendar_id,
+            description="Add calendar_id, which v1 tasks did not carry.",
+        )
+    )
     return registry
+
+
+def _add_calendar_id(data: Any) -> Any:
+    """A v1 task scheduled against a calendar nobody recorded.
+
+    ``None`` rather than a guess: the assumed five-day week is applied at read time and is visibly
+    an assumption, whereas writing a calendar id into the record would make it look like the file
+    said so.
+    """
+    if not isinstance(data, dict):
+        return data
+    if "calendar_id" in data:
+        return data
+    return {**data, "calendar_id": None}

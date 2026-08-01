@@ -24,6 +24,7 @@ from ...schema import (
     element_key,
 )
 from ...sdk import Clock, IdFactory, RecordStore, create_record_store
+from .calendars import WorkCalendar, calendar_or_default
 from .contracts import (
     PLANNING_EVENTS,
     ElementFilterSourceToken,
@@ -106,11 +107,12 @@ class ScheduleImportServiceImpl:
     ``planning.formats``.
     """
 
-    __slots__ = ("_runtime", "_stores")
+    __slots__ = ("_runtime", "_stores", "_calendars")
 
     def __init__(self, runtime: PlanningRuntime, stores: PlanningStores) -> None:
         self._runtime = runtime
         self._stores = stores
+        self._calendars: dict[str, WorkCalendar] = {}
 
     def supported_formats(self) -> tuple[ScheduleFormat, ...]:
         return ("csv", "json", "xer", "mspdi")
@@ -151,7 +153,12 @@ class ScheduleImportServiceImpl:
         if format in ("xer", "mspdi"):
             parser = parse_xer if format == "xer" else parse_mspdi
             try:
-                return ok(parser(payload))
+                rows, calendars = parser(payload)
+                # Held on the service rather than on each record: a calendar is shared by many
+                # tasks, and copying it onto every one would be the same object stored a thousand
+                # times and able to disagree with itself.
+                self._calendars = dict(calendars)
+                return ok(rows)
             except ScheduleParseError as thrown:
                 return err(
                     KernelError(
@@ -200,7 +207,12 @@ class ScheduleImportServiceImpl:
                 actual_start=_iso(actual_start) if actual_start else None,
                 actual_finish=_iso(actual_finish) if actual_finish else None,
                 percent_complete=float(percent) if percent not in (None, "") else None,
-                critical=str(row.get("critical", "")).lower() in ("1", "true", "yes"),
+                critical=(
+                    row["critical"]
+                    if isinstance(row.get("critical"), bool)
+                    else str(row.get("critical", "")).lower() in ("1", "true", "yes")
+                ),
+                calendar_id=str(row["calendar_id"]) if row.get("calendar_id") else None,
             ),
             None,
         )
@@ -329,6 +341,14 @@ class ScheduleImportServiceImpl:
         self._runtime.context.events.emit(PLANNING_EVENTS.schedule_imported, {"summary": summary})
         return ok(summary)
 
+    def calendars(self) -> Mapping[str, WorkCalendar]:
+        """Working calendars from the last import, keyed as the source programme named them."""
+        return dict(self._calendars)
+
+    def calendar_for(self, task: ScheduleTaskRecord) -> WorkCalendar:
+        """The calendar a task is scheduled against, or the assumed five-day week."""
+        return calendar_or_default(self._calendars, getattr(task, "calendar_id", None))
+
     def tasks(self, **filter: Any) -> tuple[ScheduleTaskRecord, ...]:
         parent_id = filter.get("parent_id")
         critical = filter.get("critical")
@@ -395,11 +415,12 @@ class ScheduleImportServiceImpl:
 
 
 class TaskModelLinkServiceImpl:
-    __slots__ = ("_runtime", "_stores")
+    __slots__ = ("_runtime", "_stores", "_calendars")
 
     def __init__(self, runtime: PlanningRuntime, stores: PlanningStores) -> None:
         self._runtime = runtime
         self._stores = stores
+        self._calendars: dict[str, WorkCalendar] = {}
 
     async def link(
         self,
@@ -604,11 +625,12 @@ class TimelinePlaybackServiceImpl:
 
 
 class PlannedActualComparisonServiceImpl:
-    __slots__ = ("_runtime", "_stores")
+    __slots__ = ("_runtime", "_stores", "_calendars")
 
     def __init__(self, runtime: PlanningRuntime, stores: PlanningStores) -> None:
         self._runtime = runtime
         self._stores = stores
+        self._calendars: dict[str, WorkCalendar] = {}
 
     async def compare(
         self, data_date: IsoTimestamp, task_ids: Sequence[Id] | None = None

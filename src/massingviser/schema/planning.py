@@ -27,6 +27,9 @@ class ScheduleTaskRecord:
     critical: bool = False
     total_float: float | None = None
     resource_ids: tuple[Id, ...] = ()
+    #: The working calendar this task is scheduled against, as named by the source programme.
+    #: ``None`` means the file named none and the assumed five-day, eight-hour week applies.
+    calendar_id: Id | None = None
 
 
 DependencyType = Literal["FS", "SS", "FF", "SF"]

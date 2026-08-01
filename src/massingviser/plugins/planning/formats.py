@@ -19,7 +19,10 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
+from datetime import date, timedelta
 from typing import Any
+
+from .calendars import DEFAULT_HOURS_PER_DAY, MONDAY_TO_FRIDAY, WorkCalendar
 
 #: XER stores dates as ``YYYY-MM-DD HH:MM``; the time half is optional in some exports.
 _XER_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?")
@@ -33,8 +36,72 @@ _MSPDI_DEPENDENCY = {0: "FF", 1: "FS", 2: "SF", 3: "SS"}
 
 _DOCTYPE = re.compile(r"<!DOCTYPE", re.IGNORECASE)
 
-#: An hour count, which is how P6 stores lag. The platform stores lag in days.
-_HOURS_PER_DAY = 8.0
+#: Fallback when a file names no calendar. Real durations come from the task's own calendar.
+_HOURS_PER_DAY = DEFAULT_HOURS_PER_DAY
+
+#: P6 numbers weekdays 1..7 starting at Sunday; `date.weekday()` numbers them 0..6 starting at
+#: Monday. Getting this off by one shifts an entire programme's working week by a day.
+_XER_WEEKDAY = {1: 6, 2: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5}
+
+#: MSPDI uses the same 1..7-from-Sunday convention as P6.
+_MSPDI_WEEKDAY = dict(_XER_WEEKDAY)
+
+#: Excel's day zero, which is what P6 stores calendar exceptions as. Excel also believes 1900 was
+#: a leap year, so its serials run one day ahead of reality from 1 March 1900 -- irrelevant for
+#: construction dates, and noted so nobody 'fixes' the offset below.
+_EXCEL_EPOCH = date(1899, 12, 30)
+
+#: A day block inside a P6 calendar's DaysOfWeek section: `(0||<n>()(...))`.
+_XER_DAY_BLOCK = re.compile(r"\(0\|\|(\d)\(\)\((.*?)\)\)", re.DOTALL)
+
+#: A whole-day exception: `(0||d|<excel serial>()`.
+_XER_EXCEPTION = re.compile(r"\(0\|\|d\|(\d+)\(\)")
+
+
+def _xer_calendars(tables: dict[str, list[dict[str, str]]]) -> dict[str, WorkCalendar]:
+    """Read the CALENDAR table.
+
+    ``clndr_data`` is a nested parenthesised blob rather than a table, so this reads the two things
+    the platform consumes -- which weekdays carry shift times, and which whole days are excepted --
+    and leaves the shift times themselves alone. A day is a working day when its block contains a
+    start time; that is what P6 writes and what every reader keys on.
+    """
+    calendars: dict[str, WorkCalendar] = {}
+    for row in tables.get("CALENDAR", []):
+        identifier = (row.get("clndr_id") or "").strip()
+        if not identifier:
+            continue
+        blob = row.get("clndr_data") or ""
+
+        working: set[int] = set()
+        for match in _XER_DAY_BLOCK.finditer(blob):
+            if "s|" in match.group(2):
+                mapped = _XER_WEEKDAY.get(int(match.group(1)))
+                if mapped is not None:
+                    working.add(mapped)
+
+        holidays: set[date] = set()
+        for match in _XER_EXCEPTION.finditer(blob):
+            try:
+                holidays.add(_EXCEL_EPOCH + timedelta(days=int(match.group(1))))
+            except (ValueError, OverflowError):
+                continue
+
+        try:
+            hours = float(row.get("day_hr_cnt") or DEFAULT_HOURS_PER_DAY)
+        except ValueError:
+            hours = DEFAULT_HOURS_PER_DAY
+
+        calendars[identifier] = WorkCalendar(
+            id=identifier,
+            name=(row.get("clndr_name") or "Standard").strip(),
+            # A calendar whose blob named no working day is far more likely to be a blob this
+            # reader did not understand than a calendar where nobody ever works.
+            working_weekdays=frozenset(working) if working else MONDAY_TO_FRIDAY,
+            holidays=frozenset(holidays),
+            hours_per_day=hours if hours > 0 else DEFAULT_HOURS_PER_DAY,
+        )
+    return calendars
 
 
 class ScheduleParseError(ValueError):
@@ -64,7 +131,7 @@ def _xer_date(value: str | None) -> str | None:
     return f"{date}T{time}:00" if time else f"{date}T00:00:00"
 
 
-def parse_xer(payload: str | bytes) -> list[dict[str, Any]]:
+def parse_xer(payload: str | bytes) -> tuple[list[dict[str, Any]], dict[str, WorkCalendar]]:
     """Read a Primavera P6 XER export.
 
     XER is a flat table dump: ``%T`` names a table, ``%F`` gives its column names, and each ``%R``
@@ -106,6 +173,11 @@ def parse_xer(payload: str | bytes) -> list[dict[str, Any]]:
     if not task_rows:
         raise ScheduleParseError("The XER contains no TASK table.")
 
+    calendars = _xer_calendars(tables)
+    task_calendar = {
+        row.get("task_id", ""): (row.get("clndr_id") or "").strip() for row in task_rows
+    }
+
     # wbs_id -> a readable code, when the file carries the WBS table.
     wbs_names = {
         row.get("wbs_id", ""): row.get("wbs_short_name") or row.get("wbs_name") or ""
@@ -123,9 +195,13 @@ def parse_xer(payload: str | bytes) -> list[dict[str, Any]]:
         predecessor = identity.get(row.get("pred_task_id", ""))
         if not successor or not predecessor:
             continue
-        lag_hours = row.get("lag_hr_cnt") or "0"
+        # Converted through the *successor's* calendar. Lag is stored in hours and a six-hour day
+        # makes 16 hours of lag two and a bit days, not two -- the hardcoded eight was only ever
+        # right for the default calendar.
+        calendar = calendars.get(task_calendar.get(row.get("task_id", ""), ""))
+        hours_per_day = calendar.hours_per_day if calendar else _HOURS_PER_DAY
         try:
-            lag = float(lag_hours) / _HOURS_PER_DAY
+            lag = float(row.get("lag_hr_cnt") or 0) / (hours_per_day or _HOURS_PER_DAY)
         except ValueError:
             lag = 0.0
         predecessors.setdefault(successor, []).append(
@@ -158,10 +234,11 @@ def parse_xer(payload: str | bytes) -> list[dict[str, Any]]:
                 "percent_complete": fraction,
                 "wbs_code": wbs_names.get(row.get("wbs_id", "")) or None,
                 "critical": (row.get("driving_path_flag") or "").upper() == "Y",
+                "calendar_id": task_calendar.get(row.get("task_id", "")) or None,
                 "predecessors": predecessors.get(code, []),
             }
         )
-    return rows
+    return rows, calendars
 
 
 def _tag(element: ElementTree.Element) -> str:
@@ -180,7 +257,96 @@ def _children(element: ElementTree.Element, name: str) -> list[ElementTree.Eleme
     return [child for child in element if _tag(child) == name]
 
 
-def parse_mspdi(payload: str | bytes) -> list[dict[str, Any]]:
+def _mspdi_calendars(root: ElementTree.Element) -> dict[str, WorkCalendar]:
+    """Read `<Calendars>`.
+
+    MS Project spells the same two facts differently from P6: a `<WeekDay>` carries a `DayType`
+    (1..7 from Sunday) and a `DayWorking` flag, and an exception is a `<WeekDay>` with a
+    `<TimePeriod>` instead of a day type. One level of `<BaseCalendarUID>` is followed; a chain
+    deeper than that is left alone rather than half-resolved.
+    """
+    calendars: dict[str, WorkCalendar] = {}
+    bases: dict[str, str] = {}
+
+    for container in _children(root, "Calendars"):
+        for element in _children(container, "Calendar"):
+            uid = _child(element, "UID")
+            if uid is None:
+                continue
+            base = _child(element, "BaseCalendarUID")
+            if base and base != "-1":
+                bases[uid] = base
+
+            working: set[int] = set()
+            holidays: set[date] = set()
+            declared = False
+            for days in _children(element, "WeekDays"):
+                for day in _children(days, "WeekDay"):
+                    day_type = _child(day, "DayType")
+                    period = _children(day, "TimePeriod")
+                    if day_type is not None and not period:
+                        declared = True
+                        try:
+                            mapped = _MSPDI_WEEKDAY.get(int(day_type))
+                        except ValueError:
+                            continue
+                        if mapped is not None and (_child(day, "DayWorking") or "0") == "1":
+                            working.add(mapped)
+                    elif period:
+                        # An exception. Non-working ones are the ones that move a date.
+                        if (_child(day, "DayWorking") or "0") == "1":
+                            continue
+                        for span in period:
+                            start = _child(span, "FromDate") or _child(day, "FromDate")
+                            finish = _child(span, "ToDate") or start
+                            first, last = _iso_date(start), _iso_date(finish)
+                            if first is None:
+                                continue
+                            cursor = first
+                            while cursor <= (last or first):
+                                holidays.add(cursor)
+                                cursor += timedelta(days=1)
+
+            hours = _child(element, "HoursPerDay")
+            try:
+                hours_per_day = float(hours) if hours else DEFAULT_HOURS_PER_DAY
+            except ValueError:
+                hours_per_day = DEFAULT_HOURS_PER_DAY
+
+            calendars[uid] = WorkCalendar(
+                id=uid,
+                name=_child(element, "Name") or "Standard",
+                working_weekdays=frozenset(working) if declared and working else MONDAY_TO_FRIDAY,
+                holidays=frozenset(holidays),
+                hours_per_day=hours_per_day if hours_per_day > 0 else DEFAULT_HOURS_PER_DAY,
+            )
+
+    # One level of inheritance: a calendar that declared no week of its own takes its base's.
+    for uid, base in bases.items():
+        parent = calendars.get(base)
+        child = calendars.get(uid)
+        if parent is None or child is None or child.working_weekdays != MONDAY_TO_FRIDAY:
+            continue
+        calendars[uid] = WorkCalendar(
+            id=child.id,
+            name=child.name,
+            working_weekdays=parent.working_weekdays,
+            holidays=frozenset(child.holidays | parent.holidays),
+            hours_per_day=child.hours_per_day,
+        )
+    return calendars
+
+
+def _iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def parse_mspdi(payload: str | bytes) -> tuple[list[dict[str, Any]], dict[str, WorkCalendar]]:
     """Read a Microsoft Project XML (MSPDI) export.
 
     Two things this gets right that a naive reader does not:
@@ -203,6 +369,8 @@ def parse_mspdi(payload: str | bytes) -> list[dict[str, Any]]:
     task_containers = _children(root, "Tasks")
     if not task_containers:
         raise ScheduleParseError("The XML has no <Tasks> element; this is not an MSPDI export.")
+
+    calendars = _mspdi_calendars(root)
 
     by_uid: dict[str, str] = {}
     elements: list[ElementTree.Element] = []
@@ -265,10 +433,11 @@ def parse_mspdi(payload: str | bytes) -> list[dict[str, Any]]:
                 "wbs_code": _child(task, "WBS"),
                 "parent_id": parent,
                 "critical": (_child(task, "Critical") or "0") in ("1", "true", "True"),
+                "calendar_id": _child(task, "CalendarUID"),
                 "predecessors": predecessors,
             }
         )
-    return rows
+    return rows, calendars
 
 
 def flatten_predecessors(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:

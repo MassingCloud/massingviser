@@ -87,4 +87,13 @@ ALL_SCHEMAS: tuple[str, ...] = tuple(
 #: Everything starts at 1. The value of declaring them now -- rather than when the first migration
 #: is written -- is that the forward-incompatibility guard works from the first release: a document
 #: written by a future build is refused instead of being silently misread.
-CURRENT_VERSION: Mapping[str, int] = MappingProxyType({schema: 1 for schema in ALL_SCHEMAS})
+#: Schemas that have moved past their first shape, with the reason. Everything absent is still v1.
+#:
+#: v2 of the task record adds `calendar_id`. The field is optional and old documents migrate by
+#: taking its default -- but the version still moves, because a v2 document opened by a build that
+#: only knows v1 must be *refused* rather than quietly read without the calendar it depends on.
+_BUMPED: Mapping[str, int] = MappingProxyType({SCHEMA.schedule_task: 2})
+
+CURRENT_VERSION: Mapping[str, int] = MappingProxyType(
+    {schema: _BUMPED.get(schema, 1) for schema in ALL_SCHEMAS}
+)

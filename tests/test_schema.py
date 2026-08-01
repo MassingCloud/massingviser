@@ -193,13 +193,30 @@ def test_schema_ids_keep_the_wire_format_prefix():
 
 
 def test_the_default_migration_registry_declares_all_of_them():
+    """Derived from CURRENT_VERSION, not hardcoded: a schema that moves must not break this."""
     from massingviser.schema import create_default_migration_registry
+    from massingviser.schema.schemas import CURRENT_VERSION
 
     registry = create_default_migration_registry()
     for schema in ALL_SCHEMAS:
-        assert registry.latest_version(schema) == 1
-        assert registry.is_compatible(schema, 1)
-        assert not registry.is_compatible(schema, 2)  # a newer build's document is refused
+        current = CURRENT_VERSION[schema]
+        assert registry.latest_version(schema) == current
+        assert registry.is_compatible(schema, current)
+        # A document from a newer build is refused rather than misread.
+        assert not registry.is_compatible(schema, current + 1)
+
+
+def test_every_schema_past_its_first_version_has_a_path_from_v1():
+    """A bumped version with no migration behind it strands every document ever written."""
+    from massingviser.schema import create_default_migration_registry
+    from massingviser.schema.schemas import CURRENT_VERSION
+
+    registry = create_default_migration_registry()
+    for schema, current in CURRENT_VERSION.items():
+        if current == 1:
+            continue
+        assert registry.is_compatible(schema, 1), f"{schema} v1 cannot reach v{current}"
+        assert registry.plan(schema, 1).ok
 
 
 # ---------------------------------------------------------------------------------------------
