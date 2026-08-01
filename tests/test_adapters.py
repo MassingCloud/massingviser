@@ -931,6 +931,7 @@ def test_dedup_leaves_every_element_exactly_where_the_file_put_it(separately_aut
         assert vertices.max(axis=0) == pytest.approx(np.asarray(box.max), abs=1e-6)
 
 
+@ifc_only  # pure maths, but it lives in the IFC adapter and that module needs IfcOpenShell
 def test_an_offset_is_rotated_by_the_placement_not_just_added():
     """A quarter turn about z sends a +x offset to +y. Adding it raw keeps it on x."""
     from massingviser.adapters.ifc import compose_translation
