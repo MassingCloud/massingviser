@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 750, the Python side
+python -m pytest                          # 754, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**772 tests.** Organised by the claim each defends:
+**776 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|

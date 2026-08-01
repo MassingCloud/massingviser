@@ -1245,3 +1245,151 @@ async def test_reverting_a_move_does_not_undo_a_published_one_as_well():
     after = backend._centroid(ref)
     assert after[0] == pytest.approx(published[0]), "the published move must survive the revert"
     await kernel.stop()
+
+
+@pytest.mark.parametrize("shared", [True, False], ids=["shared profile", "own profile"])
+async def test_reverting_a_mass_moved_twice_puts_it_back_once(shared):
+    """The rejoin belongs to the *earliest* move, which is the one that forked the profile.
+
+    Spending it on the latest one instead repoints the mass onto the original immediately, and
+    every remaining inverse is then applied on top of a mass that is already home -- so a session
+    that nudged one mass twice ends up with it displaced by the first nudge, on an orphan profile,
+    no longer following the footprint it shared.
+    """
+    from massingviser import build_kernel
+    from massingviser.plugins.authoring import EditOperation, GeometryBackendToken
+    from massingviser.plugins.massing import MASSING_COMMANDS, MassingToken, ProfileToken
+    from massingviser.schema import ElementRef
+
+    kernel = build_kernel()
+    await kernel.start()
+    profile = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)]},
+        )
+    ).value
+    mass = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "A", "profile_id": profile, "story_count": 2, "story_height": 3.5},
+        )
+    ).value.id
+    if shared:
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "B", "profile_id": profile, "story_count": 2, "story_height": 3.5},
+        )
+
+    backend = kernel.capabilities.get(GeometryBackendToken)
+    ref = ElementRef("massing", mass)
+    origin = backend._centroid(ref)
+
+    def nudge(dx):
+        return EditOperation(
+            kind="move",
+            element=ref,
+            transform=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, float(dx), 0, 0, 1),
+        )
+
+    operations = [nudge(10.0), nudge(25.0)]
+    for operation in operations:
+        assert (await backend.apply([operation])).ok
+    assert backend._centroid(ref)[0] == pytest.approx(origin[0] + 35.0)
+
+    await backend.revert(operations)
+
+    assert backend._centroid(ref)[0] == pytest.approx(origin[0])
+    masses, profiles = (
+        kernel.capabilities.get(MassingToken),
+        kernel.capabilities.get(ProfileToken),
+    )
+    # Back on the footprint it started on, not on a copy that happens to sit in the same place.
+    assert masses.get(mass).profile_id == profile
+    assert len(profiles.list()) == 1, "the fork must not be left behind"
+    await kernel.stop()
+
+
+async def test_a_matrix_that_cannot_be_inverted_is_refused_even_when_rejoining():
+    """The rejoin path ignores the matrix, but the command's *inverse* does not.
+
+    `create_inverse` inverts this matrix, and `invert_planar_rigid` raises on one it cannot
+    invert. The bus logs that and declines to record the command -- leaving the edit applied and
+    absent from the undo stack, so the next undo silently reverses the command before it. Refusing
+    up front is what keeps that unreachable.
+    """
+    from massingviser import build_kernel
+    from massingviser.plugins.massing import MASSING_COMMANDS, MassingToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    first = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)]},
+        )
+    ).value
+    second = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (9, 0, 0), (9, 9, 0), (0, 9, 0)]},
+        )
+    ).value
+    mass = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "A", "profile_id": first, "story_count": 2, "story_height": 3.5},
+        )
+    ).value.id
+
+    scale = (2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+    refused = await kernel.commands.execute(
+        MASSING_COMMANDS.transform_mass, {"id": mass, "matrix": scale, "rejoin": second}
+    )
+    assert not refused.ok
+    assert "vertical extrusion" in refused.error.message
+
+    # And the undo stack is still the one it was: undoing reaches the create, not a transform
+    # that was applied but never recorded.
+    assert (await kernel.commands.undo()).ok
+    assert kernel.capabilities.get(MassingToken).get(mass) is None
+    await kernel.stop()
+
+
+async def test_rejoining_does_not_delete_a_profile_somebody_drew():
+    """`rejoin` is caller-supplied. Only a profile this service forked may be cleaned up."""
+    from massingviser import build_kernel
+    from massingviser.plugins.massing import MASSING_COMMANDS, ProfileToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    drawn = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (20, 0, 0), (20, 10, 0), (0, 10, 0)], "name": "Drawn"},
+        )
+    ).value
+    other = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (9, 0, 0), (9, 9, 0), (0, 9, 0)], "name": "Other"},
+        )
+    ).value
+    mass = (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": "A", "profile_id": drawn, "story_count": 2, "story_height": 3.5},
+        )
+    ).value.id
+
+    shift = (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 0, 0, 1)
+    assert (
+        await kernel.commands.execute(
+            MASSING_COMMANDS.transform_mass, {"id": mass, "matrix": shift, "rejoin": other}
+        )
+    ).ok
+
+    # `drawn` is now referenced by nothing, which is exactly the state a fork is cleaned up in.
+    profiles = kernel.capabilities.get(ProfileToken)
+    assert profiles.get(drawn) is not None, "a sketched profile is not this method's to delete"
+    await kernel.stop()

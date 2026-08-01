@@ -1081,7 +1081,18 @@ class _MassingGeometryBackend:
         Reverse order matters: operations applied forwards may depend on each other, and undoing
         them in the order they ran re-runs those dependencies backwards.
         """
-        for operation in reversed(list(operations)):
+        ordered = list(operations)
+        # How many moves each mass still has waiting to be undone. The rejoin belongs to the
+        # *earliest* move of a mass -- that is the one that forked its shared profile -- and
+        # spending it on the latest one instead puts the mass back on the original immediately and
+        # then applies every remaining inverse on top of it.
+        pending: dict[str, int] = {}
+        for operation in ordered:
+            if operation.kind == "move" and operation.element is not None and operation.transform:
+                global_id = operation.element.global_id
+                pending[global_id] = pending.get(global_id, 0) + 1
+
+        for operation in reversed(ordered):
             if operation.element is None:
                 continue
             if operation.kind == "create":
@@ -1103,12 +1114,16 @@ class _MassingGeometryBackend:
                 except ValueError:
                     continue  # Never applied in the first place, so there is nothing to undo.
                 mass_id = operation.element.global_id
+                pending[mass_id] = pending.get(mass_id, 1) - 1
                 await self._kernel.commands.execute(
                     MASSING_COMMANDS.transform_mass,
                     {
                         "id": mass_id,
                         "matrix": inverse,
-                        "rejoin": self._before_move.pop(mass_id, None),
+                        # Only once this mass has no earlier move left to undo.
+                        "rejoin": (
+                            self._before_move.pop(mass_id, None) if not pending[mass_id] else None
+                        ),
                     },
                 )
         self._absorb([o.element for o in operations if o.element is not None])

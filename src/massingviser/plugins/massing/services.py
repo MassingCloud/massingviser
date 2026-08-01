@@ -410,11 +410,16 @@ _DERIVED_FIELDS = frozenset({"id", "story_count", "story_heights", "total_height
 
 
 class MassingServiceImpl:
-    __slots__ = ("_runtime", "_stores")
+    __slots__ = ("_runtime", "_stores", "_forked")
 
     def __init__(self, runtime: MassingRuntime, stores: MassingStores) -> None:
         self._runtime = runtime
         self._stores = stores
+        #: Profiles `transform` created by forking a shared one. Only these may be deleted when a
+        #: mass rejoins its original -- see `transform`. Without the set, `rejoin` is a caller-
+        #: supplied id that deletes whatever profile the mass happened to be on, including one a
+        #: user drew.
+        self._forked: set[Id] = set()
 
     async def create(self, input: CreateMassingInput) -> Result[MassingObjectRecord, KernelError]:
         if not self._stores.profiles.has(input.profile_id):
@@ -489,23 +494,10 @@ class MassingServiceImpl:
                 KernelError("COMMAND_FAILED", f'Massing object "{id}" is locked.', {"id": id})
             )
 
-        # Undo of a transform that forked a shared profile. Applying the inverse matrix instead
-        # would put the mass back in the right place on the *wrong* profile -- geometrically
-        # identical, but no longer moving when its sibling's footprint is edited, which is the one
-        # thing sharing a profile is for.
-        if rejoin is not None and rejoin != existing.profile_id:
-            if not self._stores.profiles.has(rejoin):
-                return err(_not_found("profile", rejoin))
-            abandoned = existing.profile_id
-            rejoined = self._stores.masses.update(id, {"profile_id": rejoin})
-            if rejoined is None:
-                return err(_not_found("massing object", id))
-            if not any(other.profile_id == abandoned for other in self._stores.masses.all()):
-                self._stores.profiles.remove(abandoned)
-            reconcile_stories(self._runtime, self._stores, rejoined)
-            self._runtime.context.events.emit(MASSING_EVENTS.updated, {"record": rejoined})
-            return ok(rejoined)
-
+        # Checked before anything else, including the rejoin path that does not use the matrix.
+        # The command's inverse is built by inverting this matrix, and `invert_planar_rigid` raises
+        # on one it cannot invert -- which the bus swallows, leaving the edit applied and *absent
+        # from the undo stack*, so the next undo silently reverses the command before it.
         rigid = as_planar_rigid(matrix)
         if rigid is None:
             return err(
@@ -518,6 +510,29 @@ class MassingServiceImpl:
                 )
             )
         cos, sin, dx, dy, dz = rigid
+
+        # Undo of a transform that forked a shared profile. Applying the inverse matrix instead
+        # would put the mass back in the right place on the *wrong* profile -- geometrically
+        # identical, but no longer moving when its sibling's footprint is edited, which is the one
+        # thing sharing a profile is for.
+        if rejoin is not None and rejoin != existing.profile_id:
+            if not self._stores.profiles.has(rejoin):
+                return err(_not_found("profile", rejoin))
+            abandoned = existing.profile_id
+            rejoined = self._stores.masses.update(id, {"profile_id": rejoin})
+            if rejoined is None:
+                return err(_not_found("massing object", id))
+            # Only a profile this method forked. `rejoin` comes from a caller, and deleting
+            # whatever the mass happened to be on would destroy a footprint a user drew -- one
+            # that nothing else references yet precisely because they just drew it.
+            if abandoned in self._forked and not any(
+                other.profile_id == abandoned for other in self._stores.masses.all()
+            ):
+                self._stores.profiles.remove(abandoned)
+                self._forked.discard(abandoned)
+            reconcile_stories(self._runtime, self._stores, rejoined)
+            self._runtime.context.events.emit(MASSING_EVENTS.updated, {"record": rejoined})
+            return ok(rejoined)
 
         profile = self._stores.profiles.get(existing.profile_id)
         if profile is None:
@@ -540,6 +555,7 @@ class MassingServiceImpl:
                 base_elevation=elevation,
             )
             self._stores.profiles.add(forked)
+            self._forked.add(forked.id)
             moved = self._stores.masses.update(id, {"profile_id": forked.id})
             self._runtime.context.events.emit(MASSING_EVENTS.profile_created, {"record": forked})
         else:
