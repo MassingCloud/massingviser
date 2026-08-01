@@ -23,6 +23,7 @@ from massingviser.vcs import (
     serialise,
     verify,
 )
+from massingviser.vcs.history import _merge_trees
 
 SCHEME = {
     "name": "Tower",
@@ -304,3 +305,59 @@ async def test_the_store_reports_what_it_is_missing(repo):
 async def test_a_version_verifies_end_to_end(repo):
     commit = (await repo.save(SCHEME, message="initial", author="ada")).value
     assert await repo.objects.verify_all(commit.root_id) == ()
+
+
+# ---------------------------------------------------------------------------------------------
+# What "absent from the base" means
+#
+# `base_map.get(key)` returned None both for "the base did not have this key" and for "the base
+# held null". That let `ours == base` succeed when neither side had inherited anything, so where
+# both sides created the same record and one left a field null, the other side's value was taken
+# silently -- a conflict resolved by preference, which is the one thing this module says it never
+# does.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_both_sides_adding_a_key_conflicts_even_when_one_writes_null():
+    merged, conflicts = _merge_trees(
+        {}, {"r1": {"note": None}}, {"r1": {"note": "theirs"}}, path=""
+    )
+    assert len(conflicts) == 1
+    assert conflicts[0].path == "r1.note"
+    assert conflicts[0].ours is None and conflicts[0].theirs == "theirs"
+    # Nothing was inherited, so there is no base value to report.
+    assert conflicts[0].base is None
+
+
+def test_the_same_holds_in_the_other_direction():
+    """Neither side may win by default; the asymmetry would just move the silent loss."""
+    _, conflicts = _merge_trees({}, {"r1": {"note": "ours"}}, {"r1": {"note": None}}, path="")
+    assert len(conflicts) == 1
+
+
+def test_a_base_that_really_held_null_still_merges_cleanly():
+    """The fix must not turn 'only they changed it' into a conflict."""
+    merged, conflicts = _merge_trees(
+        {"r1": {"note": None}}, {"r1": {"note": None}}, {"r1": {"note": "theirs"}}, path=""
+    )
+    assert conflicts == []
+    assert merged == {"r1": {"note": "theirs"}}
+
+
+def test_both_sides_adding_the_same_value_is_not_a_conflict():
+    merged, conflicts = _merge_trees({}, {"r1": {"n": 1}}, {"r1": {"n": 1}}, path="")
+    assert conflicts == []
+    assert merged == {"r1": {"n": 1}}
+
+
+def test_disjoint_edits_still_merge():
+    merged, conflicts = _merge_trees({"a": 1, "b": 2}, {"a": 9, "b": 2}, {"a": 1, "b": 8}, path="")
+    assert conflicts == []
+    assert merged == {"a": 9, "b": 8}
+
+
+def test_a_key_only_one_side_adds_is_kept_without_a_conflict():
+    merged, conflicts = _merge_trees({}, {"a": 1}, {}, path="")
+    assert conflicts == [] and merged == {"a": 1}
+    merged, conflicts = _merge_trees({}, {}, {"b": 2}, path="")
+    assert conflicts == [] and merged == {"b": 2}

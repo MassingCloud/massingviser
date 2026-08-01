@@ -483,20 +483,40 @@ class Repository:
         return tuple(sorted(found, key=lambda tag: tag.name))
 
 
+#: "This key was not in the base at all", which is *not* the same as "the base held null".
+#:
+#: Conflating the two lets `ours == base` succeed when neither side inherited anything: if the base
+#: has no record and both sides create one, a field where we wrote null and they wrote a value looks
+#: like "only they changed it" and their value is taken silently. Both sides added it, so it is a
+#: conflict, and this module's whole claim is that conflicts are reported rather than resolved by
+#: preference.
+_ABSENT = object()
+
+
 def _merge_trees(
     base: Any, ours: Any, theirs: Any, *, path: str
 ) -> tuple[Any, list[MergeConflict]]:
     """Recursive three-way merge of two dicts against their common ancestor."""
     conflicts: list[MergeConflict] = []
+    inherited = base is not _ABSENT
 
     if not isinstance(ours, Mapping) or not isinstance(theirs, Mapping):
         if ours == theirs:
             return ours, conflicts
-        if ours == base:
+        # Only meaningful when there *was* something to inherit. With nothing in the base, neither
+        # side left a value alone -- both wrote one -- so neither branch applies.
+        if inherited and ours == base:
             return theirs, conflicts  # only they changed it
-        if theirs == base:
+        if inherited and theirs == base:
             return ours, conflicts  # only we changed it
-        conflicts.append(MergeConflict(path=path or "<root>", base=base, ours=ours, theirs=theirs))
+        conflicts.append(
+            MergeConflict(
+                path=path or "<root>",
+                base=base if inherited else None,
+                ours=ours,
+                theirs=theirs,
+            )
+        )
         return ours, conflicts
 
     base_map = base if isinstance(base, Mapping) else {}
@@ -506,7 +526,7 @@ def _merge_trees(
         child_path = f"{path}.{key}" if path else key
         in_ours = key in ours
         in_theirs = key in theirs
-        base_value = base_map.get(key)
+        base_value = base_map.get(key, _ABSENT)
 
         if in_ours and not in_theirs:
             # They deleted it. If we did not change it, honour the deletion.
@@ -516,7 +536,12 @@ def _merge_trees(
                 merged[key] = ours[key]
                 continue
             conflicts.append(
-                MergeConflict(path=child_path, base=base_value, ours=ours[key], theirs=None)
+                MergeConflict(
+                    path=child_path,
+                    base=None if base_value is _ABSENT else base_value,
+                    ours=ours[key],
+                    theirs=None,
+                )
             )
             merged[key] = ours[key]
             continue
@@ -528,7 +553,12 @@ def _merge_trees(
                 merged[key] = theirs[key]
                 continue
             conflicts.append(
-                MergeConflict(path=child_path, base=base_value, ours=None, theirs=theirs[key])
+                MergeConflict(
+                    path=child_path,
+                    base=None if base_value is _ABSENT else base_value,
+                    ours=None,
+                    theirs=theirs[key],
+                )
             )
             continue
 
