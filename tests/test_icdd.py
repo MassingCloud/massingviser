@@ -795,12 +795,12 @@ def test_an_unsupported_constraint_is_reported_rather_than_skipped():
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix ct: <urn:ct:> .
 ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:property ct:r .
-ct:r sh:path ct:name ; sh:minCount 1 ; sh:sparql "SELECT ..." ; sh:qualifiedValueShape ct:x .
+ct:r sh:path ct:name ; sh:minCount 1 ; sh:sparql "SELECT ..." ; sh:closedByTypes true .
 """
     report = _run(shapes=shapes)
     assert not report.complete
     assert "sparql" in report.unsupported
-    assert "qualifiedValueShape" in report.unsupported
+    assert "closedByTypes" in report.unsupported
     # And what it *can* check, it still checks.
     assert any(r.constraint == "minCount" for r in report.results)
 
@@ -824,11 +824,11 @@ def test_a_node_level_constraint_it_cannot_run_is_reported():
     shapes = """
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix ct: <urn:ct:> .
-ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:sparql ct:q ; sh:not ct:x .
+ct:S a sh:NodeShape ; sh:targetClass ct:Document ; sh:sparql ct:q ; sh:rule ct:x .
 """
     report = _run(shapes=shapes)
     assert not report.complete
-    assert "sparql" in report.unsupported and "not" in report.unsupported
+    assert "sparql" in report.unsupported and "rule" in report.unsupported
 
 
 def test_a_property_path_it_cannot_express_is_reported_not_skipped():
@@ -869,3 +869,162 @@ def test_sh_in_as_a_list_still_rejects_a_value_outside_it():
     results = shacl_validate(data, parse(SH_IN_LIST)).results
     assert len(results) == 1
     assert "external" in results[0].message and "internal" in results[0].message
+
+
+# ---------------------------------------------------------------------------------------------
+# SHACL beyond the core constraints
+#
+# Logical constraints run one shape against another's values, which is why shapes have to be
+# addressable -- and why a shape referenced by `sh:node` but never typed `sh:NodeShape` still has
+# to be found. Collecting only declared shapes would leave every logical constraint pointing at
+# nothing and quietly passing.
+# ---------------------------------------------------------------------------------------------
+
+LOGICAL_DATA = """
+@prefix ct: <urn:ct:> .
+ct:d1 a ct:Doc ; ct:owner ct:p1 .
+ct:d2 a ct:Doc ; ct:owner ct:x1 .
+ct:p1 a ct:Person ; ct:email "a@b.c" ; ct:team ct:t1 .
+ct:x1 a ct:Robot .
+ct:t1 ct:name "Design" .
+"""
+
+
+def _xml(body):
+    return parse(
+        '<?xml version="1.0"?><rdf:RDF '
+        'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+        'xmlns:sh="http://www.w3.org/ns/shacl#" xmlns:ct="urn:ct:">' + body + "</rdf:RDF>"
+    )
+
+
+_PERSON_SHAPE = """
+ <rdf:Description rdf:about="urn:ct:PersonShape">
+   <sh:property rdf:resource="urn:ct:emailRule"/></rdf:Description>
+ <rdf:Description rdf:about="urn:ct:emailRule">
+   <sh:path rdf:resource="urn:ct:email"/><sh:minCount>1</sh:minCount></rdf:Description>
+"""
+
+
+def test_sh_node_runs_another_shape_against_each_value():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:DocShape a sh:NodeShape ; sh:targetClass ct:Doc ; sh:property ct:ownerRule .
+ct:ownerRule sh:path ct:owner ; sh:node ct:PersonShape .
+ct:PersonShape sh:property ct:emailRule .
+ct:emailRule sh:path ct:email ; sh:minCount 1 .
+"""
+    report = shacl_validate(from_turtle(LOGICAL_DATA), from_turtle(shapes))
+    # d1's owner is a Person with an email; d2's is a Robot without one.
+    assert [r.focus for r in report.results] == ["urn:ct:d2"]
+    assert report.complete
+
+
+def test_a_shape_referenced_but_never_declared_is_still_found():
+    """SHACL infers shape-hood from use; `ct:PersonShape` above is never typed sh:NodeShape."""
+    shapes = from_turtle(
+        "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ct: <urn:ct:> .\n"
+        "ct:S a sh:NodeShape ; sh:targetClass ct:Doc ; sh:property ct:r .\n"
+        "ct:r sh:path ct:owner ; sh:node ct:PersonShape .\n"
+        "ct:PersonShape sh:property ct:er .\nct:er sh:path ct:email ; sh:minCount 1 .\n"
+    )
+    assert any(shape.id == "urn:ct:PersonShape" for shape in parse_shapes(shapes))
+
+
+def test_sh_not_inverts_the_verdict():
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:S a sh:NodeShape ; sh:targetClass ct:Doc ; sh:property ct:r .
+ct:r sh:path ct:owner ; sh:not ct:PersonShape .
+ct:PersonShape sh:property ct:er .
+ct:er sh:path ct:email ; sh:minCount 1 .
+"""
+    report = shacl_validate(from_turtle(LOGICAL_DATA), from_turtle(shapes))
+    assert [r.focus for r in report.results] == ["urn:ct:d1"]
+
+
+def test_an_inverse_path_follows_the_predicate_backwards():
+    """ "Every Person is owned by something" cannot be asked with a forward path."""
+    report = shacl_validate(
+        from_turtle(LOGICAL_DATA),
+        _xml(
+            '<sh:NodeShape rdf:about="urn:ct:PS">'
+            '<sh:targetClass rdf:resource="urn:ct:Person"/>'
+            '<sh:property rdf:resource="urn:ct:r"/></sh:NodeShape>'
+            '<rdf:Description rdf:about="urn:ct:r">'
+            '<sh:path rdf:resource="urn:ct:inv"/><sh:minCount>1</sh:minCount></rdf:Description>'
+            '<rdf:Description rdf:about="urn:ct:inv">'
+            '<sh:inversePath rdf:resource="urn:ct:owner"/></rdf:Description>'
+        ),
+    )
+    assert report.complete
+    assert report.results == ()  # ct:p1 is owned by ct:d1
+
+
+def test_a_sequence_path_walks_more_than_one_predicate():
+    report = shacl_validate(
+        from_turtle(LOGICAL_DATA),
+        _xml(
+            '<sh:NodeShape rdf:about="urn:ct:DS">'
+            '<sh:targetClass rdf:resource="urn:ct:Doc"/>'
+            '<sh:property rdf:resource="urn:ct:r"/></sh:NodeShape>'
+            '<rdf:Description rdf:about="urn:ct:r">'
+            '<sh:path rdf:resource="urn:ct:seq"/><sh:minCount>1</sh:minCount></rdf:Description>'
+            '<rdf:Description rdf:about="urn:ct:seq">'
+            '<rdf:first rdf:resource="urn:ct:owner"/>'
+            '<rdf:rest rdf:resource="urn:ct:seq2"/></rdf:Description>'
+            '<rdf:Description rdf:about="urn:ct:seq2">'
+            '<rdf:first rdf:resource="urn:ct:team"/>'
+            '<rdf:rest rdf:resource="http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/>'
+            "</rdf:Description>"
+        ),
+    )
+    # d1's owner has a team; d2's does not.
+    assert [r.focus for r in report.results] == ["urn:ct:d2"]
+    assert report.results[0].path == "(urn:ct:owner/urn:ct:team)"
+
+
+def test_a_qualified_value_shape_counts_conforming_values():
+    report = shacl_validate(
+        from_turtle(LOGICAL_DATA),
+        _xml(
+            '<sh:NodeShape rdf:about="urn:ct:DS">'
+            '<sh:targetClass rdf:resource="urn:ct:Doc"/>'
+            '<sh:property rdf:resource="urn:ct:r"/></sh:NodeShape>'
+            '<rdf:Description rdf:about="urn:ct:r">'
+            '<sh:path rdf:resource="urn:ct:owner"/>'
+            '<sh:qualifiedValueShape rdf:resource="urn:ct:PersonShape"/>'
+            "<sh:qualifiedMinCount>1</sh:qualifiedMinCount></rdf:Description>" + _PERSON_SHAPE
+        ),
+    )
+    assert [(r.focus, r.constraint) for r in report.results] == [("urn:ct:d2", "qualifiedMinCount")]
+
+
+def test_a_path_form_this_engine_cannot_express_is_still_reported():
+    """`zeroOrMorePath` and friends. Skipping one silently would claim it was checked."""
+    shapes = _xml(
+        '<sh:NodeShape rdf:about="urn:ct:S">'
+        '<sh:targetClass rdf:resource="urn:ct:Doc"/>'
+        '<sh:property rdf:resource="urn:ct:r"/></sh:NodeShape>'
+        '<rdf:Description rdf:about="urn:ct:r">'
+        '<sh:path rdf:resource="urn:ct:weird"/><sh:minCount>1</sh:minCount></rdf:Description>'
+        '<rdf:Description rdf:about="urn:ct:weird">'
+        '<sh:zeroOrMorePath rdf:resource="urn:ct:owner"/></rdf:Description>'
+    )
+    report = shacl_validate(from_turtle(LOGICAL_DATA), shapes)
+    assert not report.complete
+    assert any("path" in name for name in report.unsupported)
+
+
+def test_a_cyclic_shape_reference_terminates():
+    """A shapes graph can point at itself; a broken file must not take the process with it."""
+    shapes = """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ct: <urn:ct:> .
+ct:A a sh:NodeShape ; sh:targetClass ct:Doc ; sh:property ct:r .
+ct:r sh:path ct:owner ; sh:node ct:A .
+"""
+    report = shacl_validate(from_turtle(LOGICAL_DATA), from_turtle(shapes))
+    assert isinstance(report.results, tuple)

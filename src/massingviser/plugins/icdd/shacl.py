@@ -1,10 +1,17 @@
-"""SHACL Core, enough of it to run the shapes ISO 21597 publishes.
+"""SHACL, less the parts that would mean writing a query engine.
 
 The previous position here was that a SHACL engine is a large dependency for failures that are
 almost always mundane. That is still true of a *complete* engine -- SPARQL-based constraints alone
-would mean an entire query language. What is tractable, and what the published container shapes
-actually use, is **SHACL Core's constraint components**: cardinality, datatype, class, node kind,
-value ranges, string tests, and logical combinations over property paths.
+would mean an entire query language, and `sh:sparql` is still refused rather than approximated.
+
+What is implemented is everything that reduces to walking a graph and comparing values:
+cardinality, datatype, class, node kind, value ranges, string tests and enumerations; the logical
+constraints `sh:node`, `sh:not`, `sh:and`, `sh:or`, `sh:xone` and qualified value shapes; and
+property paths beyond a bare predicate -- inverse, sequence and alternative.
+
+The logical constraints are why shapes are addressable by IRI rather than being a flat list: each
+runs *another* shape against a value, and a shape referenced by `sh:node` is frequently never typed
+`sh:NodeShape` at all, because SHACL infers shape-hood from use.
 
 So that is what this validates, and the one rule that makes it honest:
 
@@ -52,6 +59,19 @@ SUPPORTED = frozenset(
         "maxInclusive",
         "minExclusive",
         "maxExclusive",
+        # Logical constraints. Each takes a shape (or a list of them) and is evaluated by running
+        # that shape against the value, which is why shapes are addressable by IRI.
+        "node",
+        "not",
+        "and",
+        "or",
+        "xone",
+        "qualifiedValueShape",
+        "qualifiedMinCount",
+        "qualifiedMaxCount",
+        # Path forms beyond a bare predicate.
+        "inversePath",
+        "alternativePath",
         # Structural, not constraints in themselves.
         "path",
         "property",
@@ -118,8 +138,64 @@ class ShaclReport:
 
 
 @dataclass(frozen=True)
+class Path:
+    """How to get from a focus node to the values a property shape constrains.
+
+    A bare predicate covers most shapes. The rest of SHACL's path language is a small grammar:
+    follow a predicate backwards, follow several in sequence, or accept any of several. Each is a
+    different question about the graph, and answering the wrong one silently constrains the wrong
+    values -- so an unrecognised form is refused at parse time rather than approximated.
+    """
+
+    kind: str = "predicate"
+    #: For `predicate` and `inverse`.
+    predicate: str | None = None
+    #: For `sequence` and `alternative`.
+    steps: tuple[Path, ...] = ()
+
+    def describe(self) -> str:
+        if self.kind == "predicate":
+            return self.predicate or "?"
+        if self.kind == "inverse":
+            return f"^{self.predicate}"
+        joiner = "/" if self.kind == "sequence" else "|"
+        return "(" + joiner.join(step.describe() for step in self.steps) + ")"
+
+    def reach(self, graph: Graph, focus: str) -> list[Any]:
+        """Every value this path leads to from one focus node."""
+        if self.kind == "predicate":
+            return graph.objects(focus, self.predicate or "")
+        if self.kind == "inverse":
+            # Backwards: every subject that points *at* this node through the predicate.
+            return [
+                Iri(triple.subject)
+                for triple in graph
+                if triple.predicate == self.predicate
+                and isinstance(triple.object, Iri)
+                and triple.object.value == focus
+            ]
+        if self.kind == "sequence":
+            current: list[Any] = [Iri(focus)]
+            for step in self.steps:
+                nxt: list[Any] = []
+                for value in current:
+                    if isinstance(value, Iri):
+                        nxt.extend(step.reach(graph, value.value))
+                current = nxt
+            return current
+        if self.kind == "alternative":
+            found: list[Any] = []
+            for step in self.steps:
+                for value in step.reach(graph, focus):
+                    if value not in found:
+                        found.append(value)
+            return found
+        return []
+
+
+@dataclass(frozen=True)
 class PropertyShape:
-    path: str
+    path: Path
     parameters: dict[str, list[Any]] = field(default_factory=dict)
     severity: str = "violation"
     message: str | None = None
@@ -157,10 +233,77 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _parse_path(value: Any, graph: Graph) -> Path | None:
+    """Read a property path, or ``None`` for a form this engine does not implement."""
+    if isinstance(value, Iri):
+        # Either a bare predicate, or a node carrying one of the path constructs.
+        inverse = graph.value(value.value, f"{SH}inversePath")
+        if isinstance(inverse, Iri):
+            inner = _parse_path(inverse, graph)
+            return Path("inverse", predicate=inner.predicate) if inner else None
+
+        alternative = graph.value(value.value, f"{SH}alternativePath")
+        if alternative is not None:
+            members = _rdf_list(alternative, graph)
+            steps = [_parse_path(member, graph) for member in members or ()]
+            if members and all(steps):
+                return Path("alternative", steps=tuple(s for s in steps if s))
+            return None
+
+        sequence = _rdf_list(value, graph)
+        if sequence is not None and len(sequence) > 1:
+            steps = [_parse_path(member, graph) for member in sequence]
+            if all(steps):
+                return Path("sequence", steps=tuple(s for s in steps if s))
+            return None
+
+        # A node carrying a path construct this engine does not implement -- `zeroOrMorePath`,
+        # `oneOrMorePath`, `zeroOrOnePath`. Falling through to "bare predicate" would treat the
+        # *construct node's own IRI* as a predicate, which matches nothing and reports every focus
+        # node as missing a value it was never asked for: a wrong answer dressed as a finding.
+        for triple in graph:
+            if (
+                triple.subject == value.value
+                and triple.predicate.startswith(SH)
+                and triple.predicate.endswith("Path")
+            ):
+                return None
+
+        return Path("predicate", predicate=value.value)
+    return None
+
+
+def _shape_ids(graph: Graph) -> list[str]:
+    """Every subject that is a shape, declared or implied.
+
+    A shape referenced by `sh:node` or `sh:not` is frequently not typed `sh:NodeShape` at all --
+    SHACL infers shape-hood from use. Collecting only declared ones would leave every logical
+    constraint pointing at nothing and quietly passing.
+    """
+    declared = list(graph.subjects_of_type(f"{SH}NodeShape"))
+    referenced: list[str] = []
+    for predicate in ("node", "not", "qualifiedValueShape"):
+        for triple in graph:
+            if triple.predicate == f"{SH}{predicate}" and isinstance(triple.object, Iri):
+                referenced.append(triple.object.value)
+    for predicate in ("and", "or", "xone"):
+        for triple in graph:
+            if triple.predicate != f"{SH}{predicate}":
+                continue
+            for member in _rdf_list(triple.object, graph) or ():
+                if isinstance(member, Iri):
+                    referenced.append(member.value)
+    seen: list[str] = []
+    for subject in declared + referenced:
+        if subject not in seen:
+            seen.append(subject)
+    return seen
+
+
 def parse_shapes(graph: Graph) -> tuple[NodeShape, ...]:
     """Read node shapes and their property shapes out of a shapes graph."""
     shapes: list[NodeShape] = []
-    for subject in graph.subjects_of_type(f"{SH}NodeShape"):
+    for subject in _shape_ids(graph):
         properties: list[PropertyShape] = []
         # Node-level parameters, scanned so `sh:sparql`, `sh:and`, `sh:not`, `sh:node` and the rest
         # are reported rather than passing unnoticed.
@@ -176,12 +319,12 @@ def parse_shapes(graph: Graph) -> tuple[NodeShape, ...]:
                 unsupported.append("property (inline shape)")
                 continue
             node = entry.value
-            path = graph.value(node, f"{SH}path")
-            if not isinstance(path, Iri):
-                # Property paths beyond a single predicate (sequences, alternatives, inverse) are
-                # a language of their own. Recorded, because skipping one silently would leave the
-                # report claiming a constraint held when it was never evaluated.
-                unsupported.append("path (not a single predicate)")
+            parsed_path = _parse_path(graph.value(node, f"{SH}path"), graph)
+            if parsed_path is None:
+                # A path form this engine does not implement -- `zeroOrMorePath` and friends.
+                # Recorded, because skipping one silently would leave the report claiming a
+                # constraint held when it was never evaluated.
+                unsupported.append("path (unsupported form)")
                 continue
             parameters: dict[str, list[Any]] = {}
             for triple in graph:
@@ -197,7 +340,7 @@ def parse_shapes(graph: Graph) -> tuple[NodeShape, ...]:
             severity_value = graph.value(node, f"{SH}severity")
             properties.append(
                 PropertyShape(
-                    path=path.value,
+                    path=parsed_path,
                     parameters=parameters,
                     severity=_SEVERITY.get(
                         severity_value.value if isinstance(severity_value, Iri) else "",
@@ -261,7 +404,12 @@ def _numeric(value: Any) -> float | None:
 
 
 def _check(
-    shape: PropertyShape, focus: str, values: Sequence[Any], data: Graph
+    shape: PropertyShape,
+    focus: str,
+    values: Sequence[Any],
+    data: Graph,
+    index: dict[str, NodeShape] | None = None,
+    depth: int = 0,
 ) -> list[tuple[str, str]]:
     """Evaluate one property shape. Returns ``(constraint, message)`` for each failure."""
     failures: list[tuple[str, str]] = []
@@ -367,6 +515,85 @@ def _check(
             elif limit is not None and not compare(actual, limit):
                 failures.append((name, f"{actual} is {describe} {limit}"))
 
+    # -- logical constraints -------------------------------------------------------------------
+    #
+    # Each runs another shape against each value. They are evaluated last so a value that already
+    # failed a cheap cardinality or datatype test is not also reported against a nested shape,
+    # which turns one mistake into a page of findings.
+    shapes = index or {}
+
+    def holds(value: Any, shape_iri: str) -> bool | None:
+        """Whether a value conforms to a named shape; ``None`` when it cannot be judged."""
+        target = shapes.get(shape_iri)
+        if target is None or not isinstance(value, Iri):
+            return None
+        return _shape_holds(data, target, value.value, shapes)
+
+    node = first("node")
+    if node is not None and isinstance(node, Iri):
+        for value in values:
+            verdict = holds(value, node.value)
+            if verdict is False:
+                failures.append(("node", f"{_plain(value)!r} does not conform to {node.value}"))
+
+    negated = first("not")
+    if negated is not None and isinstance(negated, Iri):
+        for value in values:
+            verdict = holds(value, negated.value)
+            if verdict is True:
+                failures.append(
+                    ("not", f"{_plain(value)!r} conforms to {negated.value} and must not")
+                )
+
+    for name, wanted in (("and", "all"), ("or", "any"), ("xone", "exactly one")):
+        entry = first(name)
+        if entry is None:
+            continue
+        members = [m.value for m in (_rdf_list(entry, data) or []) if isinstance(m, Iri)]
+        if not members:
+            # The list lives in the shapes graph; when it is not reachable from the data graph
+            # there is nothing to run, and claiming the constraint passed would be a lie.
+            continue
+        for value in values:
+            verdicts = [holds(value, member) for member in members]
+            judged = [v for v in verdicts if v is not None]
+            if not judged:
+                continue
+            count = sum(1 for v in judged if v)
+            satisfied = (
+                count == len(judged)
+                if name == "and"
+                else count >= 1
+                if name == "or"
+                else count == 1
+            )
+            if not satisfied:
+                failures.append(
+                    (name, f"{_plain(value)!r} satisfies {count} of {len(judged)}, needs {wanted}")
+                )
+
+    qualified = first("qualifiedValueShape")
+    if qualified is not None and isinstance(qualified, Iri):
+        conforming = sum(1 for value in values if holds(value, qualified.value) is True)
+        minimum = first("qualifiedMinCount")
+        maximum = first("qualifiedMaxCount")
+        if minimum is not None and conforming < int(_plain(minimum)):
+            failures.append(
+                (
+                    "qualifiedMinCount",
+                    f"{conforming} value(s) conform to {qualified.value}, "
+                    f"expected at least {_plain(minimum)}",
+                )
+            )
+        if maximum is not None and conforming > int(_plain(maximum)):
+            failures.append(
+                (
+                    "qualifiedMaxCount",
+                    f"{conforming} value(s) conform to {qualified.value}, "
+                    f"expected at most {_plain(maximum)}",
+                )
+            )
+
     languages = parameters.get("languageIn")
     if languages:
         permitted = {str(_plain(entry)) for entry in languages}
@@ -424,9 +651,44 @@ def unsupported_parameters(shapes: Iterable[NodeShape]) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _shape_holds(data: Graph, shape: NodeShape, focus: str, index: dict[str, NodeShape]) -> bool:
+    """Whether one node satisfies one shape, with nothing reported.
+
+    The building block every logical constraint needs. `sh:not` cares only *whether* the inner
+    shape held, and reporting its internals would fill a report with failures that are the point
+    rather than the problem.
+    """
+    return not _evaluate(data, shape, focus, index)
+
+
+def _evaluate(
+    data: Graph, shape: NodeShape, focus: str, index: dict[str, NodeShape], depth: int = 0
+) -> list[Result]:
+    """Run every property shape of one node shape against one focus node."""
+    if depth > 12:
+        # A shapes graph can reference itself. Bounded rather than recursive-until-death, because
+        # a cyclic shape is a broken file and must not take the process with it.
+        return []
+    found: list[Result] = []
+    for property_shape in shape.properties:
+        values = property_shape.path.reach(data, focus)
+        for constraint, detail in _check(property_shape, focus, values, data, index, depth):
+            found.append(
+                Result(
+                    focus=focus,
+                    path=property_shape.path.describe(),
+                    constraint=constraint,
+                    severity=property_shape.severity,
+                    message=property_shape.message or detail,
+                )
+            )
+    return found
+
+
 def validate(data: Graph, shapes_graph: Graph) -> ShaclReport:
     """Run a shapes graph against a data graph."""
     shapes = parse_shapes(shapes_graph)
+    index = {shape.id: shape for shape in shapes}
     results: list[Result] = []
     focus_count = 0
 
@@ -435,18 +697,7 @@ def validate(data: Graph, shapes_graph: Graph) -> ShaclReport:
             continue
         for focus in _focus_nodes(data, shape):
             focus_count += 1
-            for property_shape in shape.properties:
-                values = data.objects(focus, property_shape.path)
-                for constraint, detail in _check(property_shape, focus, values, data):
-                    results.append(
-                        Result(
-                            focus=focus,
-                            path=property_shape.path,
-                            constraint=constraint,
-                            severity=property_shape.severity,
-                            message=property_shape.message or detail,
-                        )
-                    )
+            results.extend(_evaluate(data, shape, focus, index))
 
     return ShaclReport(
         results=tuple(results),
