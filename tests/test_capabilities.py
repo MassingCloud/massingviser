@@ -420,3 +420,60 @@ async def test_cashflow_without_a_schedule_refuses_rather_than_inventing_one(har
         ESTIMATING_COMMANDS.generate_cashflow, {"estimate_id": estimate.id}
     )
     assert not result.ok and result.error.code == "CAPABILITY_NOT_FOUND"
+
+
+# ---------------------------------------------------------------------------------------------
+# The power operator
+#
+# `float(left ** right)` caught OverflowError and ValueError. Python does not raise for a negative
+# base with a fractional exponent -- it returns a *complex* number, and `float()` of that raises
+# TypeError, which escaped a function whose entire contract is to return a Result.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["(-8)^(1/3)", "(-2)^0.5", "(-1)^0.5", "0^-1", "0^-2.5"],
+)
+def test_a_power_with_no_real_value_is_reported_not_raised(expression):
+    """`Depth ^ 0.5` on a negative quantity is a modelling mistake, not a crash."""
+    result = evaluate_expression(expression, {})
+    assert not result.ok
+    assert result.error.code == "COMMAND_FAILED"
+
+
+def test_a_negative_quantity_raised_to_a_half_names_the_values():
+    result = evaluate_expression("Depth ^ 0.5", {"Depth": -4.0})
+    assert not result.ok
+    assert "no real value" in result.error.message
+    assert result.error.details["base"] == -4.0
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("(-8)^2", 64.0),  # an even integer power of a negative base is real
+        ("(-8)^3", -512.0),  # and so is an odd one
+        ("8^(1/3)", 2.0),
+        ("2^-1", 0.5),
+        ("0^0", 1.0),
+        ("2^3^2", 512.0),  # right-associative
+    ],
+)
+def test_powers_that_do_have_a_real_value_still_work(expression, expected):
+    """The guard must not swallow the cases that were always fine."""
+    result = evaluate_expression(expression, {})
+    assert result.ok
+    assert result.value == pytest.approx(expected)
+
+
+def test_unary_minus_binds_tighter_than_the_power_operator():
+    """Pinned because it is a real fork, and a silent disagreement about a sign is unfindable.
+
+    Spreadsheets read `-2^2` as `(-2)^2 = 4`; Python and most mathematical writing read it as
+    `-(2^2) = -4`. Estimators write these formulas in Excel all day, so the spreadsheet reading is
+    the less surprising one here -- but only if it stays put.
+    """
+    assert evaluate_expression("-2^2", {}).value == pytest.approx(4.0)
+    assert evaluate_expression("-(2^2)", {}).value == pytest.approx(-4.0)
+    assert evaluate_expression("0-2^2", {}).value == pytest.approx(-4.0)

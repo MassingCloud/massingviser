@@ -113,6 +113,14 @@ SAFE_FUNCTIONS: Mapping[str, Callable[..., float]] = {
 }
 
 _PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "%": 2, "^": 3}
+
+#: Unary sign binds **tighter** than `^`, so `-2^2` is `(-2)^2` = 4, not `-(2^2)` = -4.
+#:
+#: This is a genuine fork: spreadsheets read it this way, Python and most mathematical writing read
+#: it the other. Estimators write these formulas and they write them in Excel all day, so the
+#: spreadsheet reading is the less surprising one *here* -- and it is stated because a silent
+#: disagreement about the sign of a rate is not something anyone would catch by reading a bill.
+_UNARY_PRECEDENCE = 4
 _RIGHT_ASSOCIATIVE = {"^", "u-", "u+"}
 _UNARY_MINUS = "u-"
 _UNARY_PLUS = "u+"
@@ -216,7 +224,11 @@ def _to_rpn(tokens: Sequence[_Token]) -> Result[list[_Token], KernelError]:
                 previous is None or (previous.kind == "op" and previous.value not in (")",))
             ):
                 operator = _UNARY_MINUS if operator == "-" else _UNARY_PLUS
-            precedence = 4 if operator in (_UNARY_MINUS, _UNARY_PLUS) else _PRECEDENCE.get(operator)
+            precedence = (
+                _UNARY_PRECEDENCE
+                if operator in (_UNARY_MINUS, _UNARY_PLUS)
+                else _PRECEDENCE.get(operator)
+            )
             if precedence is None:
                 return err(
                     KernelError(
@@ -226,7 +238,9 @@ def _to_rpn(tokens: Sequence[_Token]) -> Result[list[_Token], KernelError]:
             while stack and stack[-1].value != "(":
                 top = stack[-1].value
                 top_precedence = (
-                    4 if top in (_UNARY_MINUS, _UNARY_PLUS) else _PRECEDENCE.get(top, 0)
+                    _UNARY_PRECEDENCE
+                    if top in (_UNARY_MINUS, _UNARY_PLUS)
+                    else _PRECEDENCE.get(top, 0)
                 )
                 if top_precedence > precedence or (
                     top_precedence == precedence and operator not in _RIGHT_ASSOCIATIVE
@@ -338,9 +352,33 @@ def evaluate_expression(
                 )
             stack.append(left / right if operator == "/" else _math.fmod(left, right))
         elif operator == "^":
+            # A negative base raised to a fractional power has no real root, and Python does not
+            # raise for it -- it returns a *complex* number, which `float()` then rejects with a
+            # TypeError. That escaped this function entirely, which is the one thing an evaluator
+            # handed untrusted formulas must never do. `Depth ^ 0.5` on a negative quantity is a
+            # modelling mistake, and it has to come back as a reportable failure, not a crash.
+            if left < 0 and right != int(right):
+                return err(
+                    KernelError(
+                        "COMMAND_FAILED",
+                        f"{left} raised to {right} has no real value, in expression "
+                        f'"{expression}".',
+                        {"expression": expression, "base": left, "exponent": right},
+                    )
+                )
+            if left == 0 and right < 0:
+                return err(
+                    KernelError(
+                        "COMMAND_FAILED",
+                        f'Zero raised to a negative power in expression "{expression}".',
+                        {"expression": expression, "exponent": right},
+                    )
+                )
             try:
                 stack.append(float(left**right))
-            except (OverflowError, ValueError) as thrown:
+            except (OverflowError, ValueError, TypeError, ZeroDivisionError) as thrown:
+                # Backstop. The two cases above are the reachable ones; this keeps any future
+                # arithmetic surprise a Result rather than an exception through the caller.
                 return err(KernelError("COMMAND_FAILED", f"Expression overflowed: {thrown}", {}))
         else:
             return err(KernelError("COMMAND_FAILED", f"Unknown operator {operator!r}.", {}))

@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 639, the Python side
+python -m pytest                          # 652, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**661 tests.** Organised by the claim each defends:
+**674 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -387,7 +387,7 @@ cd web && npm ci && npm run test:all      # 22, the browser side
 | `test_vcs.py` | Content addressing — dedup, closure depths, chunking, diffs as set operations, and a three-way merge that will not resolve a conflict by preference |
 | `test_geometry.py` | BVH ray/frustum/pair queries, plane extraction, clash penetration, crease shading against the analytic answer, the wire format byte-for-byte |
 | `test_massing.py` | Planar geometry, and that triangulation conserves area for holes and concave rings |
-| `test_capabilities.py` | Money exactness, evaluator safety (five injection attempts), anchoring, issue state machine |
+| `test_capabilities.py` | Money exactness, evaluator safety (five injection attempts), a power with no real value reported rather than raised, anchoring, issue state machine |
 | `test_delivery.py` | Triage surviving a re-run, links surviving a re-issue, earned value falling on rework, P6 and MS Project identity and units |
 | `test_content.py` | Semver resolution, a publish gate that fires on somebody else's change and not your own, Procrustes alignment, constraints measured against real coordinates |
 | `test_platform.py` | Interop detection, bounded forecasts, shell bookkeeping, engine scene packages, the payload transfer plan |
@@ -406,8 +406,8 @@ CI runs the suite two ways, because "the extras are optional" is a claim and not
 
 | Job | Installs | Result |
 |---|---|---|
-| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 606 pass, 33 skip |
-| `full` | `.[all,dev]` — every extra, Linux and Windows | 639 pass |
+| `core` | `.[dev]` — no extras, Python 3.10–3.13 | 619 pass, 33 skip |
+| `full` | `.[all,dev]` — every extra, Linux and Windows | 652 pass |
 | `web` | Node 22 + headless Chrome — fixtures, readers, then pixels | 22 pass |
 
 The `core` job asserts up front that `available() == ()`. Without that, the job would go green just
