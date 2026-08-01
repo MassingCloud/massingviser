@@ -824,6 +824,122 @@ def test_twelve_identical_walls_collapse_to_one_shape(instanced_ifc):
     assert len(set(belongs.values())) == 1
 
 
+@pytest.fixture(scope="module")
+def separately_authored_ifc(tmp_path_factory):
+    """Four walls, each with its *own* representation -- two shapes drawn twice.
+
+    This is the common case the representation id cannot help with: someone drew the same wall
+    four times rather than copying it, so the file declares four representations for two shapes.
+    One of them is rotated a quarter turn, because a rotated placement is where a naive offset
+    correction goes wrong.
+    """
+    if "ifc" not in available():
+        pytest.skip("ifcopenshell not installed")
+    import ifcopenshell
+    import ifcopenshell.api.aggregate
+    import ifcopenshell.api.context
+    import ifcopenshell.api.geometry
+    import ifcopenshell.api.root
+    import ifcopenshell.api.spatial
+    import ifcopenshell.api.unit
+
+    file = ifcopenshell.file(schema="IFC4")
+    project = ifcopenshell.api.root.create_entity(file, ifc_class="IfcProject", name="T")
+    ifcopenshell.api.unit.assign_unit(file)
+    model = ifcopenshell.api.context.add_context(file, context_type="Model")
+    body = ifcopenshell.api.context.add_context(
+        file,
+        context_type="Model",
+        context_identifier="Body",
+        target_view="MODEL_VIEW",
+        parent=model,
+    )
+    site = ifcopenshell.api.root.create_entity(file, ifc_class="IfcSite", name="S")
+    building = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuilding", name="B")
+    storey = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuildingStorey", name="L0")
+    for child, parent in ((site, project), (building, site), (storey, building)):
+        ifcopenshell.api.aggregate.assign_object(file, products=[child], relating_object=parent)
+
+    quarter = np.array([[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
+    for index, length in enumerate((5.0, 6.0, 5.0, 6.0)):
+        wall = ifcopenshell.api.root.create_entity(file, ifc_class="IfcWall", name=f"W{index}")
+        # A fresh representation each time -- deliberately not shared.
+        drawn = ifcopenshell.api.geometry.add_wall_representation(
+            file, context=body, length=length, height=3.0, thickness=0.2
+        )
+        # Drawn away from its own placement origin, which is what a real authored file looks like
+        # and what `add_wall_representation` on its own never produces. Without this the dedup
+        # offset is always zero and a test of the offset would prove nothing.
+        solid = drawn.Items[0]
+        solid.Position.Location.Coordinates = (1.5, 0.75, 0.0)
+        ifcopenshell.api.geometry.assign_representation(file, product=wall, representation=drawn)
+        matrix = quarter.copy() if index == 3 else np.eye(4)
+        matrix[0, 3] = index * 20.0
+        matrix[1, 3] = 4.0
+        ifcopenshell.api.geometry.edit_object_placement(file, product=wall, matrix=matrix)
+        ifcopenshell.api.spatial.assign_container(file, products=[wall], relating_structure=storey)
+
+    path = tmp_path_factory.mktemp("authored") / "walls.ifc"
+    file.write(str(path))
+    return str(path)
+
+
+@ifc_only
+def test_the_same_shape_drawn_twice_collapses_even_with_different_ids(separately_authored_ifc):
+    """Four representations, two shapes. The ids alone would have sent four meshes."""
+    ifc = load("ifc")
+    source = ifc.IfcModelSource(ifc.open_ifc(separately_authored_ifc, model_id="m1"))
+    shapes, belongs = source.instances()
+    assert len(belongs) == 4
+    assert len(shapes) == 2
+    assert len(set(belongs.values())) == 2
+
+
+@ifc_only
+def test_two_different_shapes_never_collapse(separately_authored_ifc):
+    """The failure that matters is the wrong one merging, so measure it directly."""
+    ifc = load("ifc")
+    source = ifc.IfcModelSource(ifc.open_ifc(separately_authored_ifc, model_id="m1"))
+    shapes, belongs = source.instances()
+    by_element = {global_id: shapes[key][0] for global_id, key in belongs.items()}
+    lengths = sorted(round(float(v[:, 0].max() - v[:, 0].min()), 3) for v in by_element.values())
+    assert lengths == [5.0, 5.0, 6.0, 6.0]
+
+
+@ifc_only
+def test_dedup_leaves_every_element_exactly_where_the_file_put_it(separately_authored_ifc):
+    """The regression this whole mechanism risks: shapes moved to the origin, placements not.
+
+    `add_wall_representation` centres the thickness on the y axis, so the local corner is *not*
+    at the origin and the offset is genuinely non-zero. One wall is rotated, so an offset added
+    straight to the translation column rather than rotated first lands 100 mm out.
+    """
+    ifc = load("ifc")
+    model = ifc.open_ifc(separately_authored_ifc, model_id="m1")
+    source = ifc.IfcModelSource(model)
+    expected = {element.global_id: element.box for element in model.elements}
+
+    shapes, belongs = source.instances()
+    assert any(offset != (0.0, 0.0, 0.0) for offset in source._offsets.values()), (
+        "the fixture must exercise a non-zero offset or it proves nothing"
+    )
+
+    for node in source.nodes():
+        vertices = ifc.place(shapes[belongs[node.global_id]][0], node.transform)
+        box = expected[node.global_id]
+        assert vertices.min(axis=0) == pytest.approx(np.asarray(box.min), abs=1e-6)
+        assert vertices.max(axis=0) == pytest.approx(np.asarray(box.max), abs=1e-6)
+
+
+def test_an_offset_is_rotated_by_the_placement_not_just_added():
+    """A quarter turn about z sends a +x offset to +y. Adding it raw keeps it on x."""
+    from massingviser.adapters.ifc import compose_translation
+
+    quarter = (0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0)
+    composed = compose_translation(quarter, (2.0, 0.0, 0.0))
+    assert composed[12:15] == pytest.approx((3.0, 2.0, 0.0))
+
+
 @ifc_only
 async def test_the_scene_sends_one_mesh_and_twelve_placements(instanced_ifc):
     """The whole point, measured: one buffer, twelve nodes, twelve distinct transforms."""

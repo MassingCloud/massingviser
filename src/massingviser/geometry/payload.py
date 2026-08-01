@@ -49,6 +49,7 @@ import hashlib
 import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -349,6 +350,59 @@ def chunk_meshes(
     if current:
         chunks.append(tuple(current))
     return tuple(chunks)
+
+
+#: Grid the vertices are snapped to before two shapes are compared, in metres. One micron is far
+#: below any tolerance a building is modelled to and far above float32 noise, so it absorbs the
+#: difference between two authorings of the same thing without being able to merge two things that
+#: genuinely differ.
+SHAPE_PRECISION = 1e-6
+
+
+def _shape_fingerprint(vertices: np.ndarray, faces: np.ndarray) -> str:
+    """A hash of a mesh's shape, independent of where it sits.
+
+    Translated to its own minimum corner and snapped to a grid, so two identical windows authored
+    separately -- each with its own local origin -- hash the same. Rotation is deliberately *not*
+    normalised: a canonical orientation needs principal axes, and those are degenerate for exactly
+    the shapes a building is full of. A box has no unique "first" axis, so any rule for picking one
+    is arbitrary, and an arbitrary rule merges two boxes that differ.
+    """
+    if not len(vertices):
+        return "empty"
+    grid = np.round((vertices - vertices.min(axis=0)) / SHAPE_PRECISION).astype(np.int64)
+    digest = hashlib.sha256()
+    digest.update(grid.tobytes())
+    digest.update(np.asarray(faces, dtype=np.int64).tobytes())
+    return digest.hexdigest()[:ID_LENGTH]
+
+
+def deduplicate_by_translation(
+    meshes: Mapping[str, tuple[Any, Any]],
+) -> tuple[
+    dict[str, tuple[np.ndarray, np.ndarray]], dict[str, tuple[str, tuple[float, float, float]]]
+]:
+    """Collapse meshes that are the same shape in different places.
+
+    Returns ``({shape key: geometry at the origin}, {mesh key: (shape key, offset)})``.
+
+    This catches what a representation id cannot: two elements authored separately that happen to
+    be the same shape. It will *not* catch two that differ only by rotation, and does not pretend
+    to -- see `_shape_fingerprint`.
+    """
+    shapes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    placements: dict[str, tuple[str, tuple[float, float, float]]] = {}
+
+    for key, (raw_vertices, raw_faces) in sorted(meshes.items()):
+        vertices, faces = _as_mesh(raw_vertices, raw_faces)
+        if not len(vertices) or not len(faces):
+            continue
+        corner = vertices.min(axis=0)
+        fingerprint = _shape_fingerprint(vertices, faces)
+        if fingerprint not in shapes:
+            shapes[fingerprint] = (vertices - corner, faces)
+        placements[key] = (fingerprint, (float(corner[0]), float(corner[1]), float(corner[2])))
+    return shapes, placements
 
 
 def _decimated(mesh: MeshInput, budget: int) -> MeshInput:

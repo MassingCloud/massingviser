@@ -21,6 +21,7 @@ from .payload import (
     DEFAULT_CHUNK_VERTICES,
     DEFAULT_LOD_BUDGETS,
     MESH_ENCODING,
+    SHAPE_PRECISION,
     DecodedMesh,
     EncodedPayload,
     GeometryPayloadSet,
@@ -30,6 +31,7 @@ from .payload import (
     build_geometry_payloads,
     chunk_meshes,
     decode_mesh_batch,
+    deduplicate_by_translation,
     encode_mesh_batch,
 )
 from .scene import (
@@ -58,8 +60,10 @@ __all__ = [
     "GeometryPlacement",
     "MeshEntry",
     "MeshInput",
+    "SHAPE_PRECISION",
     "build_geometry_payloads",
     "chunk_meshes",
+    "deduplicate_by_translation",
     "decode_mesh_batch",
     "encode_mesh_batch",
     "cluster_decimate",

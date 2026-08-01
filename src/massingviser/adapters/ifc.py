@@ -60,6 +60,22 @@ IDENTITY_TRANSFORM: tuple[float, ...] = (
 )
 
 
+def compose_translation(
+    transform: Sequence[float], offset: tuple[float, float, float]
+) -> tuple[float, ...]:
+    """``transform`` applied after a translation -- i.e. ``M . T(offset)``.
+
+    The offset is in the *shape's* frame, so it is rotated by the transform's basis before being
+    added to its translation. Adding it to the translation column directly would be right only for
+    an axis-aligned placement, and silently wrong for every rotated one.
+    """
+    matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4).T
+    shifted = matrix[:3, :3] @ np.asarray(offset, dtype=np.float64) + matrix[:3, 3]
+    values = list(transform)
+    values[12], values[13], values[14] = (float(v) for v in shifted)
+    return tuple(values)
+
+
 def place(vertices: np.ndarray, transform: Sequence[float]) -> np.ndarray:
     """Apply a column-major 4x4 to a vertex array."""
     matrix = np.asarray(transform, dtype=np.float64).reshape(4, 4).T
@@ -436,10 +452,13 @@ class IfcModelSource:
     point of GlobalId being the identity.
     """
 
-    __slots__ = ("_model",)
+    __slots__ = ("_model", "_offsets")
 
     def __init__(self, model: IfcModel) -> None:
         self._model = model
+        #: GlobalId -> the shift `deduplicate_by_translation` applied to its shape, folded back
+        #: into the placement so the element still lands where the file put it.
+        self._offsets: dict[str, tuple[float, float, float]] = {}
 
     # -- estimating.ModelElementSource --------------------------------------------------------
 
@@ -530,7 +549,7 @@ class IfcModelSource:
                 },
                 # The placement travels with the node, because the geometry it points at is the
                 # shared representation and not this element's own copy of it.
-                transform=element.transform,
+                transform=self.placement_of(element.global_id),
                 relationships=(
                     (SceneRelationship("ContainedIn", element.storey_global_id),)
                     if element.storey_global_id
@@ -570,6 +589,14 @@ class IfcModelSource:
             if element.vertices is not None and element.faces is not None
         }
 
+    def placement_of(self, global_id: str) -> tuple[float, ...]:
+        """The element's own placement, with any shape-dedup offset folded in."""
+        element = self._model.get(global_id)
+        if element is None:
+            return IDENTITY_TRANSFORM
+        offset = getattr(self, "_offsets", {}).get(global_id)
+        return compose_translation(element.transform, offset) if offset else element.transform
+
     def instances(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], dict[str, str]]:
         """The deduplicated shapes, and which shape each element is a placement of.
 
@@ -578,7 +605,7 @@ class IfcModelSource:
         travel as 4x4s in the manifest -- which is the whole difference between sending a facade
         and sending a window.
         """
-        shapes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        by_representation: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         belongs: dict[str, str] = {}
         for element in self._model.elements:
             if element.local_vertices is None or element.faces is None:
@@ -590,9 +617,27 @@ class IfcModelSource:
                 if element.representation_id
                 else f"e{element.global_id}"
             )
-            shapes.setdefault(key, (element.local_vertices, element.faces))
+            by_representation.setdefault(key, (element.local_vertices, element.faces))
             belongs[element.global_id] = key
-        return shapes, belongs
+
+        # A second pass over what the file could not tell us. Two elements authored separately are
+        # different representations even when they are the same shape, so the ids alone leave
+        # duplicates on the table; this collapses those, and its fingerprint is exact rather than
+        # tolerant, so it cannot merge two things that differ.
+        from ..geometry import deduplicate_by_translation
+
+        shapes, offsets = deduplicate_by_translation(by_representation)
+        resolved = {
+            global_id: offsets[key][0] for global_id, key in belongs.items() if key in offsets
+        }
+        # The dedup moved each shape to its own corner, so the element's placement has to make up
+        # the difference. Without this every element whose local geometry did not already start at
+        # the origin lands displaced by its own bounding-box corner -- a shift that looks like a
+        # modelling error rather than a bug here.
+        self._offsets = {
+            global_id: offsets[key][1] for global_id, key in belongs.items() if key in offsets
+        }
+        return shapes, resolved
 
     def transforms(self) -> dict[str, tuple[float, ...]]:
         return {element.global_id: element.transform for element in self._model.elements}
