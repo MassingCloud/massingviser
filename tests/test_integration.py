@@ -325,3 +325,129 @@ async def test_diagnostics_describe_the_assembled_platform():
     assert "procurement.packages" in diagnostics.capabilities
     assert "panel" in diagnostics.ui_points
     await kernel.stop()
+
+
+# ---------------------------------------------------------------------------------------------
+# Massing instancing
+#
+# A forty-storey tower repeating one floor plate used to ship forty identical meshes. The pipeline
+# always supported instancing; the bridge simply keyed geometry on the storey rather than on the
+# shape.
+# ---------------------------------------------------------------------------------------------
+
+
+async def _tower(kernel, storeys=6):
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    sketched = await kernel.commands.execute(
+        MASSING_COMMANDS.sketch_profile,
+        {"points": [(0, 0, 0), (20, 0, 0), (20, 12, 0), (0, 12, 0)], "name": "Tower"},
+    )
+    await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {
+            "name": "Tower",
+            "profile_id": sketched.value,
+            "story_count": storeys,
+            "story_height": 3.5,
+        },
+    )
+
+
+async def test_a_tower_of_identical_storeys_ships_one_mesh():
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _tower(kernel, storeys=40)
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    refs = source.payload_refs()
+    assert len(source.geometry()) == 40
+    # Forty placements of one plate.
+    assert sum(ref.mesh_count for ref in refs) == 1
+    await kernel.stop()
+
+
+async def test_every_storey_is_still_placed_at_its_own_elevation():
+    """The saving is only real if the transform puts each plate back where it belongs."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _tower(kernel, storeys=6)
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+
+    elevations = sorted(
+        round(source.transform_of(global_id)[14], 3) for global_id in source.geometry()
+    )
+    assert elevations == [0.0, 3.5, 7.0, 10.5, 14.0, 17.5]
+    await kernel.stop()
+
+
+async def test_the_shared_plate_sits_at_the_origin():
+    """If the buffer still carried an elevation, the transform would double it."""
+    from massingviser import build_kernel
+    from massingviser.geometry import decode_mesh_batch
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _tower(kernel, storeys=6)
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+
+    ladder = next(iter(source.geometry().values()))
+    mesh = decode_mesh_batch(source.read(ladder[0].payload_id))[ladder[0].geometry_index]
+    lowest = min(float(vertex[2]) for vertex in mesh.vertices)
+    assert lowest == pytest.approx(0.0)
+    await kernel.stop()
+
+
+async def test_the_scene_node_carries_the_placement():
+    """The engine joins the shared buffer to the node; without the transform they all stack."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import SceneExportToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _tower(kernel, storeys=6)
+
+    package = (await kernel.capabilities.get(SceneExportToken).build()).value
+    drawable = [node for node in package.nodes if node.geometry]
+    assert len(drawable) == 6
+    assert len({(n.geometry[0].payload_id, n.geometry[0].geometry_index) for n in drawable}) == 1
+    assert sorted(round(node.transform[14], 3) for node in drawable) == [
+        0.0,
+        3.5,
+        7.0,
+        10.5,
+        14.0,
+        17.5,
+    ]
+    await kernel.stop()
+
+
+async def test_two_masses_sharing_a_footprint_share_the_plate():
+    """Keyed on the shape, so the saving crosses masses rather than stopping at one."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    kernel = build_kernel()
+    await kernel.start()
+    for name in ("A", "B"):
+        sketched = await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0)], "name": name},
+        )
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": name, "profile_id": sketched.value, "story_count": 3, "story_height": 3.0},
+        )
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    assert len(source.geometry()) == 6
+    assert sum(ref.mesh_count for ref in source.payload_refs()) == 1
+    await kernel.stop()

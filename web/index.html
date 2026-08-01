@@ -64,7 +64,12 @@
     </aside>
 
     <script type="module">
+      import * as THREE from 'three';
       import { SceneViewer } from './src/viewer.js';
+
+      // Exposed alongside the viewer so an automated check can measure in world space with the
+      // same maths the renderer uses, rather than reimplementing matrix application.
+      window.__THREE = THREE;
 
       const viewer = new SceneViewer(document.getElementById('canvas'));
       // Exposed so the scene can be inspected from the console, and so an automated check can

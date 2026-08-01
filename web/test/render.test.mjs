@@ -96,19 +96,14 @@ test('the model is uploaded and reports what it transferred', async () => {
 
 test('geometry lands where the model says it is', async () => {
   const bounds = await page.evaluate(() => {
-    let min = [Infinity, Infinity, Infinity];
-    let max = [-Infinity, -Infinity, -Infinity];
+    // In **world** space. The buffers hold the shared plate at the origin and the placement lives
+    // on the node, so reading raw vertex data would measure the family rather than the building --
+    // and would pass just as happily if the transform were never applied at all.
+    const box = new window.__THREE.Box3();
     for (const mesh of window.viewer.meshes.values()) {
-      const position = mesh.geometry.getAttribute('position');
-      for (let i = 0; i < position.count; i += 1) {
-        const point = [position.getX(i), position.getY(i), position.getZ(i)];
-        for (let axis = 0; axis < 3; axis += 1) {
-          min[axis] = Math.min(min[axis], point[axis]);
-          max[axis] = Math.max(max[axis], point[axis]);
-        }
-      }
+      box.expandByObject(mesh);
     }
-    return { min, max };
+    return { min: box.min.toArray(), max: box.max.toArray() };
   });
   // The demo scheme: 90 m across, 68 m deep, a 28-storey tower at 3.5 m -> 98 m.
   assert.deepEqual(bounds.min.map(Math.round), [0, 0, 0]);

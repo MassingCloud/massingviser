@@ -38,6 +38,7 @@ from .plugins.coordination import (
     coordination_plugin,
 )
 from .plugins.engine import (
+    IDENTITY_TRANSFORM,
     GeometryPayloadSourceToken,
     GeometryRef,
     PayloadRef,
@@ -65,7 +66,7 @@ from .plugins.massing import (
     MetricsToken,
     ProfileToken,
     StoryToken,
-    extrude_stories,
+    extrude,
     massing_plugin,
     to_xy,
 )
@@ -555,6 +556,49 @@ class _MassingMetrics:
         )
 
 
+def _shape_key(
+    outline: Sequence[tuple[float, float]],
+    holes: Sequence[Sequence[tuple[float, float]]],
+    height: float,
+) -> str:
+    """A content hash of everything that decides a storey's shape.
+
+    Keyed on the geometry rather than on the mass and storey index, which is the whole point: two
+    storeys of the same tower, and two different masses that happen to share a footprint and a
+    storey height, all collapse to one entry.
+    """
+    payload = repr(
+        (
+            tuple((round(x, 9), round(y, 9)) for x, y in outline),
+            tuple(tuple((round(x, 9), round(y, 9)) for x, y in hole) for hole in holes),
+            round(float(height), 9),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _translation(x: float, y: float, z: float) -> tuple[float, ...]:
+    """Column-major, translation at 12-14 -- the platform's convention throughout."""
+    return (
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        float(x),
+        float(y),
+        float(z),
+        1.0,
+    )
+
+
 class _MassingGeometrySource:
     """Tessellates massing storeys and publishes them as content-addressed geometry payloads.
 
@@ -582,15 +626,20 @@ class _MassingGeometrySource:
         #: rejected outright. A single rebind cannot be observed halfway.
         self._state: tuple[Any, Any, tuple[Any, ...]] | None = None
 
-    def _inputs(self) -> tuple[Any, dict[str, tuple[Any, Any]]]:
+    def _inputs(self) -> tuple[Any, dict[str, tuple[Any, Any]], dict[str, Any]]:
         masses = self._kernel.capabilities.get(MassingToken)
         stories = self._kernel.capabilities.get(StoryToken)
         profiles = self._kernel.capabilities.get(ProfileToken)
         if masses is None or stories is None or profiles is None:
-            return (), {}
+            return (), {}, {}
 
         signature: list[Any] = []
-        meshes: dict[str, tuple[Any, Any]] = {}
+        #: Shape key -> geometry at the origin. A forty-storey tower repeating one floor plate is
+        #: one entry here, not forty, and two masses that happen to share a footprint and a storey
+        #: height share it too.
+        shapes: dict[str, tuple[Any, Any]] = {}
+        #: GlobalId -> (shape key, placement). What makes a storey *that* storey is the transform.
+        placements: dict[str, tuple[str, tuple[float, ...]]] = {}
         for mass in masses.list():
             profile = profiles.get(mass.profile_id)
             if profile is None:
@@ -619,26 +668,30 @@ class _MassingGeometrySource:
                     tuple(sorted((k, tuple(v)) for k, v in overrides.items())),
                 )
             )
-            for story_mesh in extrude_stories(
-                outer,
-                holes,
-                heights,
-                base_elevation=profile.base_elevation,
-                story_outlines=overrides or None,
-            ):
-                if story_mesh.mesh.is_empty:
-                    continue
-                # The same id `_MassingElementSource` costs and `_MassingElementResolver` anchors.
-                # Geometry that used its own numbering would be geometry nothing else could name.
-                meshes[f"{mass.id}:{story_mesh.index:03d}"] = (
-                    story_mesh.mesh.vertices,
-                    story_mesh.mesh.faces,
-                )
-        return tuple(signature), meshes
+            # Extruded at the origin and placed by a transform, rather than each storey carrying
+            # its own copy of the plate at its own elevation. This is what `extrude_stories` does
+            # internally, unrolled so the repeated shape can be recognised as repeated.
+            elevation = profile.base_elevation
+            for index, height in enumerate(heights):
+                outline = overrides.get(index, outer)
+                # Holes belong to the base profile. A per-storey override is its own outline and
+                # `extrude_stories` does not punch the base profile's holes through it.
+                punched = holes if outline is outer else []
+                key = _shape_key(outline, punched, height)
+                if key not in shapes:
+                    mesh = extrude(outline, punched, 0.0, height)
+                    if not mesh.is_empty:
+                        shapes[key] = (mesh.vertices, mesh.faces)
+                if key in shapes:
+                    # The same id `_MassingElementSource` costs and `_MassingElementResolver`
+                    # anchors. Geometry with its own numbering is geometry nothing else can name.
+                    placements[f"{mass.id}:{index:03d}"] = (key, _translation(0.0, 0.0, elevation))
+                elevation += height
+        return tuple(signature), shapes, placements
 
-    def _current(self) -> tuple[Any, Any, tuple[Any, ...]]:
-        """The payload set and its refs, always from the same build."""
-        signature, meshes = self._inputs()
+    def _current(self) -> tuple[Any, Any, tuple[Any, ...], dict[str, Any]]:
+        """The payload set, its refs and the placements, always from the same build."""
+        signature, shapes, placements = self._inputs()
         state = self._state
         if state is not None and state[0] == signature:
             return state
@@ -648,7 +701,7 @@ class _MassingGeometrySource:
             state = self._state
             if state is not None and state[0] == signature:
                 return state
-            built = build_geometry_payloads(meshes)
+            built = build_geometry_payloads(shapes)
             refs = tuple(
                 PayloadRef(
                     id=payload.id,
@@ -661,7 +714,7 @@ class _MassingGeometrySource:
                 )
                 for payload in built.payloads
             )
-            self._state = (signature, built, refs)
+            self._state = (signature, built, refs, placements)
             return self._state
 
     # -- GeometryPayloadSource ---------------------------------------------------------------
@@ -670,19 +723,30 @@ class _MassingGeometrySource:
         return self._current()[2]
 
     def geometry(self) -> Mapping[str, Sequence[GeometryRef]]:
-        built = self._current()[1]
-        return {
-            global_id: tuple(
+        """Every storey's ladder, resolved through the shape it is a placement of."""
+        _, built, _, placements = self._current()
+        ladders = {
+            key: tuple(
                 GeometryRef(
-                    payload_id=placement.payload_id,
-                    geometry_index=placement.geometry_index,
-                    lod=placement.lod,
-                    face_count=placement.face_count,
+                    payload_id=entry.payload_id,
+                    geometry_index=entry.geometry_index,
+                    lod=entry.lod,
+                    face_count=entry.face_count,
                 )
-                for placement in ladder
+                for entry in ladder
             )
-            for global_id, ladder in built.placements.items()
+            for key, ladder in built.placements.items()
         }
+        return {
+            global_id: ladders[key]
+            for global_id, (key, _transform) in placements.items()
+            if key in ladders
+        }
+
+    def transform_of(self, global_id: str) -> tuple[float, ...]:
+        """Where this storey sits. Identity for anything with no geometry."""
+        placement = self._current()[3].get(global_id)
+        return placement[1] if placement else IDENTITY_TRANSFORM
 
     def read(self, payload_id: str) -> bytes | None:
         found = self._current()[1].by_id(payload_id)
@@ -697,10 +761,11 @@ class _MassingSceneSource:
     exports a package that selects, filters and inspects.
     """
 
-    __slots__ = ("_source",)
+    __slots__ = ("_source", "_geometry")
 
-    def __init__(self, source: _MassingElementSource) -> None:
+    def __init__(self, source: _MassingElementSource, geometry: _MassingGeometrySource) -> None:
         self._source = source
+        self._geometry = geometry
 
     def nodes(self) -> Sequence[SceneNode]:
         return tuple(
@@ -709,6 +774,9 @@ class _MassingSceneSource:
                 ifc_class=element.ifc_class,
                 parent_global_id=element.global_id.split(":")[0],
                 level_global_id=element.level_global_id,
+                # The buffer is the shared plate; the placement is what makes this storey this
+                # storey. A forty-storey tower is one mesh and forty matrices.
+                transform=self._geometry.transform_of(element.global_id),
                 property_sets={
                     "Pset_QuantityTakeOff": {
                         "Area": element.properties.get("Area"),
@@ -1032,12 +1100,11 @@ def create_bridge_plugin(kernel: Kernel[Any]) -> Any:
         context.capabilities.provide(ClashEngineToken, _BvhClashEngine(spatial), version="0.1.0")
         context.capabilities.provide(BoqLineSourceToken, _BoqLineBridge(kernel), version="0.1.0")
         context.capabilities.provide(MetricProviderToken, _MassingMetrics(kernel), version="0.1.0")
+        geometry = _MassingGeometrySource(kernel)
         context.capabilities.provide(
-            SceneNodeSourceToken, _MassingSceneSource(source), version="0.1.0"
+            SceneNodeSourceToken, _MassingSceneSource(source, geometry), version="0.1.0"
         )
-        context.capabilities.provide(
-            GeometryPayloadSourceToken, _MassingGeometrySource(kernel), version="0.1.0"
-        )
+        context.capabilities.provide(GeometryPayloadSourceToken, geometry, version="0.1.0")
         context.capabilities.provide(
             GeometryBackendToken, _MassingGeometryBackend(kernel), version="0.1.0"
         )
