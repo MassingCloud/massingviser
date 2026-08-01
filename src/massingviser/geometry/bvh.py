@@ -41,8 +41,11 @@ class Aabb:
 
     @staticmethod
     def union(boxes: Iterable[Aabb]) -> Aabb:
-        lows = np.array([box.min for box in boxes], dtype=np.float64)
-        highs = np.array([box.max for box in boxes], dtype=np.float64)
+        # Materialised once: the parameter is an Iterable, and reading it twice consumed a
+        # generator on the first pass and reduced over an empty array on the second.
+        collected = list(boxes)
+        lows = np.array([box.min for box in collected], dtype=np.float64)
+        highs = np.array([box.max for box in collected], dtype=np.float64)
         return Aabb(tuple(lows.min(axis=0)), tuple(highs.max(axis=0)))
 
     @property
@@ -178,8 +181,11 @@ class Bvh:
         """
         origin_array = np.asarray(origin, dtype=np.float64)
         direction_array = np.asarray(direction, dtype=np.float64)
-        norm = np.linalg.norm(direction_array)
-        if norm == 0:
+        norm = float(np.linalg.norm(direction_array))
+        # Not just zero: a NaN or infinite component gives a norm that is not zero either, and
+        # every downstream comparison against NaN is False -- so an unusable direction came back
+        # as a hit on everything, at a distance of NaN.
+        if norm == 0.0 or not np.isfinite(norm):
             return ()
         direction_array = direction_array / norm
 
@@ -195,12 +201,31 @@ class Bvh:
     def _slab(
         self, box: Aabb, origin: np.ndarray, inverse: np.ndarray, max_distance: float
     ) -> float | None:
-        low = (np.asarray(box.min) - origin) * inverse
-        high = (np.asarray(box.max) - origin) * inverse
-        near = np.nanmin(np.stack([low, high]), axis=0)
-        far = np.nanmax(np.stack([low, high]), axis=0)
-        t_near = float(np.max(near))
-        t_far = float(np.min(far))
+        """Distance to the first intersection with ``box``, or ``None``.
+
+        The axes the ray does not travel along are handled separately rather than through the
+        arithmetic. On such an axis ``1/0`` is an infinity, and where the origin sits *exactly* on
+        one of the box's faces the bound is ``0 * inf`` -- NaN. Letting `nanmin`/`nanmax` drop that
+        substitutes the opposite face's bound, which reads as ``t_near = +inf > t_far`` and the box
+        is missed: a horizontal pick ray at a slab's own base elevation, or any ray from the model
+        origin, silently hit nothing. Such an axis in fact constrains no distance at all -- the ray
+        is inside that slab along its whole length, or outside it along its whole length.
+        """
+        low_bound = np.asarray(box.min, dtype=np.float64)
+        high_bound = np.asarray(box.max, dtype=np.float64)
+
+        parallel = ~np.isfinite(inverse)
+        if np.any(parallel & ((origin < low_bound) | (origin > high_bound))):
+            return None
+
+        with np.errstate(invalid="ignore"):
+            low = (low_bound - origin) * inverse
+            high = (high_bound - origin) * inverse
+        near = np.where(parallel, -np.inf, np.minimum(low, high))
+        far = np.where(parallel, np.inf, np.maximum(low, high))
+
+        t_near = float(near.max())
+        t_far = float(far.min())
         if t_far < 0 or t_near > t_far or t_near > max_distance:
             return None
         return max(t_near, 0.0)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import struct
+import warnings
 
 import numpy as np
 import pytest
@@ -699,3 +700,88 @@ def test_each_lod_level_is_shaded_from_its_own_geometry():
         assert len(mesh.normals) == len(mesh.vertices)
         # Still a sphere at every level, so the analytic check still holds.
         assert np.allclose(np.linalg.norm(mesh.normals, axis=1), 1.0, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------------------------
+# Rays that run along a box face
+#
+# The slab test divides by each direction component, so an axis the ray does not travel along
+# divides by zero. Where the origin also sits exactly on one of that axis's faces the bound is
+# `0 * inf` -- NaN -- and how those are handled decides whether an ordinary plan-view pick works.
+# ---------------------------------------------------------------------------------------------
+
+SLAB = Aabb((0.0, 0.0, 5.0), (10.0, 10.0, 8.0))
+
+
+@pytest.mark.parametrize(
+    ("z", "why"),
+    [
+        (5.0, "exactly on the base face"),
+        (8.0, "exactly on the top face"),
+        (5.0001, "a tenth of a millimetre inside"),
+        (6.5, "mid-slab"),
+    ],
+)
+def test_a_horizontal_pick_at_a_slab_face_still_finds_the_slab(z, why):
+    """Levels are exact numbers, so a plan-view ray at a storey elevation is the normal case.
+
+    Substituting the opposite face's bound for the NaN made `t_near` positive infinity, so the
+    box was rejected and the pick returned nothing -- while `query_aabb` over the same geometry
+    happily reported the element as present.
+    """
+    index = Bvh(["slab"], [SLAB])
+    assert index.raycast((-1.0, 5.0, z), (1.0, 0.0, 0.0)) == (("slab", pytest.approx(1.0)),), why
+
+
+@pytest.mark.parametrize("z", [4.999, 8.001, -100.0])
+def test_a_horizontal_ray_that_misses_the_slab_still_misses_it(z):
+    """The fix must not turn every parallel ray into a hit."""
+    assert Bvh(["slab"], [SLAB]).raycast((-1.0, 5.0, z), (1.0, 0.0, 0.0)) == ()
+
+
+def test_a_ray_from_the_model_origin_hits_a_box_cornered_there():
+    index = Bvh(["b"], [Aabb((0.0, 0.0, 0.0), (10.0, 10.0, 10.0))])
+    assert index.raycast((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)) == (("b", pytest.approx(0.0)),)
+    # ...and one cornered elsewhere is still missed.
+    assert index.raycast((-1.0, -1.0, -1.0), (1.0, 0.0, 0.0)) == ()
+
+
+def test_a_zero_thickness_element_reports_a_real_distance_not_nan():
+    """A NaN distance is worse than a wrong one: `sorted` cannot order it, so "nearest first"
+    silently becomes insertion order."""
+    index = Bvh(
+        ["plate", "column"],
+        [Aabb((0.0, 0.0, 5.0), (10.0, 10.0, 5.0)), Aabb((6.0, 2.0, 0.0), (8.0, 4.0, 8.0))],
+    )
+    hits = index.raycast((-1.0, 3.0, 5.0), (1.0, 0.0, 0.0))
+    assert {label for label, _ in hits} == {"plate", "column"}
+    assert all(not math.isnan(distance) for _, distance in hits)
+    # Nearest first, which is only meaningful once the distances are numbers.
+    assert [distance for _, distance in hits] == sorted(distance for _, distance in hits)
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [(float("nan"), 0.0, 1.0), (float("inf"), 0.0, 0.0), (0.0, 0.0, 0.0)],
+    ids=["nan", "infinite", "zero"],
+)
+def test_a_direction_that_is_not_a_direction_returns_nothing(direction):
+    """Rejected up front, rather than divided by and rejected later.
+
+    The slab test refuses these anyway, so the empty result alone would pass either way. What the
+    up-front check buys is that nothing ever divides by a norm of NaN or infinity -- so the caller
+    is not handed a numpy RuntimeWarning from three frames down for an input the API could have
+    turned away.
+    """
+    index = Bvh(["b"], [Aabb((0.0, 0.0, 0.0), (10.0, 10.0, 10.0))])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert index.raycast((5.0, 5.0, -1.0), direction) == ()
+
+
+def test_a_union_over_a_generator_is_the_union_of_all_of_it():
+    """The parameter is an `Iterable`; reading it twice consumed it on the first pass."""
+    boxes = (Aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), Aabb((2.0, 2.0, 2.0), (3.0, 3.0, 3.0)))
+    united = Aabb.union(box for box in boxes)
+    assert tuple(float(v) for v in united.min) == (0.0, 0.0, 0.0)
+    assert tuple(float(v) for v in united.max) == (3.0, 3.0, 3.0)
