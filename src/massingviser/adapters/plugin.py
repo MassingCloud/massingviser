@@ -190,6 +190,8 @@ def _export_elements(context: PluginContext) -> list[Any]:
                 from .ifc import place
 
                 vertices = place(vertices, node.transform)
+            spec = (node.property_sets or {}).get("Pset_Specification", {}) or {}
+            materials = [m.strip() for m in str(spec.get("Materials", "")).split(",") if m.strip()]
             flat = {
                 f"{pset}.{key}": value
                 for pset, values in (node.property_sets or {}).items()
@@ -206,6 +208,7 @@ def _export_elements(context: PluginContext) -> list[Any]:
                     vertices=vertices,
                     faces=faces,
                     properties=flat,
+                    materials=materials,
                 )
             )
     return elements

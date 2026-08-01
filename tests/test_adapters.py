@@ -879,3 +879,151 @@ async def test_an_instanced_model_exports_without_stacking_at_the_origin(instanc
     positions = sorted(round(float(e.box.min[0]), 1) for e in back.elements if e.box)
     assert positions == [index * 7.0 for index in range(12)]
     await kernel.stop()
+
+
+# ---------------------------------------------------------------------------------------------
+# Materials and types
+#
+# A wall is rarely one material, and the order is the build-up. Flattening a cavity wall to
+# "brick" throws away the thing a specification and a cost rate both key on.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def layered_ifc(tmp_path_factory):
+    """A wall with a three-layer material set and a wall type."""
+    if "ifc" not in available():
+        pytest.skip("ifcopenshell not installed")
+    import ifcopenshell
+    import ifcopenshell.api.aggregate
+    import ifcopenshell.api.context
+    import ifcopenshell.api.geometry
+    import ifcopenshell.api.material
+    import ifcopenshell.api.root
+    import ifcopenshell.api.spatial
+    import ifcopenshell.api.type
+    import ifcopenshell.api.unit
+
+    file = ifcopenshell.file(schema="IFC4")
+    project = ifcopenshell.api.root.create_entity(file, ifc_class="IfcProject", name="T")
+    ifcopenshell.api.unit.assign_unit(file)
+    model = ifcopenshell.api.context.add_context(file, context_type="Model")
+    body = ifcopenshell.api.context.add_context(
+        file,
+        context_type="Model",
+        context_identifier="Body",
+        target_view="MODEL_VIEW",
+        parent=model,
+    )
+    site = ifcopenshell.api.root.create_entity(file, ifc_class="IfcSite", name="S")
+    building = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuilding", name="B")
+    storey = ifcopenshell.api.root.create_entity(file, ifc_class="IfcBuildingStorey", name="L0")
+    for child, parent in ((site, project), (building, site), (storey, building)):
+        ifcopenshell.api.aggregate.assign_object(file, products=[child], relating_object=parent)
+
+    wall_type = ifcopenshell.api.root.create_entity(
+        file, ifc_class="IfcWallType", name="WT-01 Cavity"
+    )
+    wall = ifcopenshell.api.root.create_entity(file, ifc_class="IfcWall", name="W1")
+    representation = ifcopenshell.api.geometry.add_wall_representation(
+        file, context=body, length=5.0, height=3.0, thickness=0.3
+    )
+    ifcopenshell.api.geometry.assign_representation(
+        file, product=wall, representation=representation
+    )
+    ifcopenshell.api.spatial.assign_container(file, products=[wall], relating_structure=storey)
+    ifcopenshell.api.type.assign_type(file, related_objects=[wall], relating_type=wall_type)
+
+    layer_set = ifcopenshell.api.material.add_material_set(
+        file, name="Cavity wall", set_type="IfcMaterialLayerSet"
+    )
+    for name in ("Facing brick", "Insulation", "Blockwork"):
+        material = ifcopenshell.api.material.add_material(file, name=name)
+        ifcopenshell.api.material.add_layer(file, layer_set=layer_set, material=material)
+    ifcopenshell.api.material.assign_material(file, products=[wall], material=layer_set)
+
+    path = tmp_path_factory.mktemp("layered") / "wall.ifc"
+    file.write(str(path))
+    return str(path)
+
+
+@ifc_only
+def test_a_layered_wall_keeps_every_material_in_build_up_order(layered_ifc):
+    """Outermost first. Sorting them, or taking the first, loses what the build-up says."""
+    element = load("ifc").open_ifc(layered_ifc, model_id="m1").elements[0]
+    assert element.materials == ("Facing brick", "Insulation", "Blockwork")
+
+
+@ifc_only
+def test_an_element_reports_the_type_it_is_an_occurrence_of(layered_ifc):
+    element = load("ifc").open_ifc(layered_ifc, model_id="m1").elements[0]
+    assert element.type_name == "WT-01 Cavity"
+
+
+@ifc_only
+def test_materials_and_type_reach_the_scene_in_their_own_set(layered_ifc):
+    """Not mixed into the file's property sets, where a consumer would have to guess the Pset."""
+    ifc = load("ifc")
+    source = ifc.IfcModelSource(ifc.open_ifc(layered_ifc, model_id="m1"))
+    node = source.nodes()[0]
+    spec = node.property_sets["Pset_Specification"]
+    assert spec["Materials"] == "Facing brick, Insulation, Blockwork"
+    assert spec["Type"] == "WT-01 Cavity"
+
+
+@ifc_only
+def test_materials_survive_being_written_back_out(layered_ifc):
+    ifc, write = load("ifc"), load("ifc_write")
+    element = ifc.open_ifc(layered_ifc, model_id="m1").elements[0]
+
+    payload, _ = write.write_ifc(
+        [
+            write.ExportElement(
+                element.global_id,
+                "W1",
+                ifc_class="IfcWall",
+                level="L0",
+                vertices=element.vertices,
+                faces=element.faces,
+                materials=element.materials,
+            )
+        ]
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        back = ifc.open_ifc(str(path), model_id="rt")
+
+    assert back.elements[0].materials == element.materials
+
+
+@ifc_only
+def test_a_single_material_is_not_written_as_a_layer_set():
+    """One material is one material. Wrapping it in a set implies a build-up that does not exist."""
+    ifc, write = load("ifc"), load("ifc_write")
+    payload, _ = write.write_ifc(
+        [
+            write.ExportElement(
+                "E1",
+                "Slab",
+                level="L0",
+                vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+                faces=[(0, 1, 2)],
+                materials=["In-situ concrete"],
+            )
+        ]
+    )
+    assert b"IFCMATERIALLAYERSET" not in payload.upper()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "out.ifc"
+        path.write_bytes(payload)
+        assert ifc.open_ifc(str(path), model_id="rt").elements[0].materials == ("In-situ concrete",)
+
+
+@ifc_only
+def test_an_element_with_no_material_writes_no_association():
+    write = load("ifc_write")
+    payload, _ = write.write_ifc(
+        [write.ExportElement("E1", "X", level="L", vertices=[(0, 0, 0)], faces=[])]
+    )
+    assert b"IFCRELASSOCIATESMATERIAL" not in payload.upper()

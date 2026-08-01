@@ -93,6 +93,13 @@ class IfcElement:
     representation_id: int | None = None
     #: Column-major, translation at 12-14 -- the platform's convention throughout.
     transform: tuple[float, ...] = IDENTITY_TRANSFORM
+    #: Material names, outermost layer first. A layered wall carries several; a single-material
+    #: element carries one. Names rather than the IFC entities, because a name is what a
+    #: specification, a cost rate and a takeoff rule all key on.
+    materials: tuple[str, ...] = ()
+    #: The `IfcTypeObject` this is an occurrence of, if any. Two elements sharing a type share a
+    #: specification, which is the thing a cost plan and a schedule both group by.
+    type_name: str | None = None
 
     @property
     def box(self) -> Aabb | None:
@@ -164,6 +171,8 @@ class IfcModel:
                 storey_global_id=storeys.get(global_id),
                 properties=_scalar_properties(product),
                 quantities=_quantities(product),
+                materials=_materials(product),
+                type_name=_type_name(product),
                 vertices=place(local, transform) if local is not None else None,
                 faces=faces,
                 local_vertices=local,
@@ -198,6 +207,36 @@ def _storey_of_element(file: Any) -> dict[str, str]:
             if getattr(element, "GlobalId", None):
                 mapping[element.GlobalId] = structure.GlobalId
     return mapping
+
+
+def _materials(product: Any) -> tuple[str, ...]:
+    """Every material named on an element, outermost layer first.
+
+    A wall is rarely one material. `get_materials` flattens layer sets, profile sets and
+    constituent sets to the list of things they are actually made of, which is the shape a
+    specification or a cost rate reads -- and the order carries the build-up, so it is preserved
+    rather than sorted.
+    """
+    try:
+        found = ifcopenshell.util.element.get_materials(product)
+    except Exception:  # noqa: BLE001 -- an element with no material association is normal
+        return ()
+    names: list[str] = []
+    for material in found or ():
+        name = getattr(material, "Name", None)
+        if name and name not in names:
+            names.append(str(name))
+    return tuple(names)
+
+
+def _type_name(product: Any) -> str | None:
+    """The `IfcTypeObject` this element is an occurrence of."""
+    try:
+        found = ifcopenshell.util.element.get_type(product)
+    except Exception:  # noqa: BLE001
+        return None
+    name = getattr(found, "Name", None)
+    return str(name) if name else None
 
 
 def _scalar_properties(product: Any) -> dict[str, Any]:
@@ -469,7 +508,26 @@ class IfcModelSource:
                 ifc_class=element.ifc_class,
                 level_global_id=element.storey_global_id,
                 parent_global_id=element.storey_global_id,
-                property_sets=_regroup(element.properties),
+                # Materials and type travel in their own set rather than mixed into the file's
+                # property sets, so a consumer can find them without knowing which Pset a
+                # particular authoring tool happened to write them into.
+                property_sets={
+                    **_regroup(element.properties),
+                    **(
+                        {
+                            "Pset_Specification": {
+                                **(
+                                    {"Materials": ", ".join(element.materials)}
+                                    if element.materials
+                                    else {}
+                                ),
+                                **({"Type": element.type_name} if element.type_name else {}),
+                            }
+                        }
+                        if (element.materials or element.type_name)
+                        else {}
+                    ),
+                },
                 # The placement travels with the node, because the geometry it points at is the
                 # shared representation and not this element's own copy of it.
                 transform=element.transform,

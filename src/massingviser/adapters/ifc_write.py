@@ -14,9 +14,14 @@ the platform never had, and any consumer would be entitled to believe it.
 That matches how geometry travels everywhere else here, and it means a coordinate written out is
 the same number a coordinate read in would be.
 
-What this does not write: no relationships beyond spatial containment, no materials, no types, no
-classification. Each is a real IFC feature and none of them is invented here from data the platform
-does not hold.
+**Materials are written; types and classification are not.** Materials survive because the platform
+reads them and can therefore write back what it was given -- as an ``IfcMaterialLayerSet`` when
+there is more than one, so a wall's build-up keeps its order. Layer *thicknesses* are written as
+zero rather than guessed: IFC demands a number there and a made-up one would read as a measurement.
+
+Types and classification are still absent, for the reason materials no longer are: nothing in this
+platform holds a type definition to write. Reading a type name back out of a file is not the same
+as owning one.
 """
 
 from __future__ import annotations
@@ -72,6 +77,10 @@ class ExportElement:
     vertices: Any = None
     faces: Any = None
     properties: Mapping[str, Any] = field(default_factory=dict)
+    #: Material names, outermost first. Written as an `IfcMaterialLayerSet` when there is more
+    #: than one, because a layered wall's build-up is the part a specification cares about and
+    #: flattening it to a single name throws that away.
+    materials: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,38 @@ def _face_set(file: Any, vertices: np.ndarray, faces: np.ndarray) -> Any:
     ]
     return file.create_entity(
         "IfcPolygonalFaceSet", Coordinates=coordinates, Closed=True, Faces=polygons
+    )
+
+
+def _assign_materials(file: Any, product: Any, names: Sequence[str], cache: dict[str, Any]) -> None:
+    """Associate materials, as a layer set when there is more than one.
+
+    Layer thicknesses are not invented. IFC requires one on a layer, so each is written as zero and
+    the *order* carries the build-up -- which is the fact the platform actually holds. A made-up
+    thickness would read as a measurement.
+    """
+    if not names:
+        return
+    materials = []
+    for name in names:
+        if name not in cache:
+            cache[name] = file.create_entity("IfcMaterial", Name=name)
+        materials.append(cache[name])
+
+    if len(materials) == 1:
+        associated: Any = materials[0]
+    else:
+        layers = [
+            file.create_entity("IfcMaterialLayer", Material=material, LayerThickness=0.0)
+            for material in materials
+        ]
+        associated = file.create_entity("IfcMaterialLayerSet", MaterialLayers=layers)
+
+    file.create_entity(
+        "IfcRelAssociatesMaterial",
+        GlobalId=ifcopenshell.guid.new(),
+        RelatedObjects=[product],
+        RelatingMaterial=associated,
     )
 
 
@@ -167,6 +208,8 @@ def write_ifc(
             storeys[(building_key, name)] = storey
 
     without_geometry: list[tuple[str, str]] = []
+    #: One IfcMaterial per name, shared by every element that uses it.
+    material_cache: dict[str, Any] = {}
 
     for element in elements:
         ifc_class = element.ifc_class
@@ -214,6 +257,8 @@ def write_ifc(
             ifcopenshell.api.geometry.edit_object_placement(file, product=product, matrix=np.eye(4))
         else:
             without_geometry.append((element.global_id, "no triangles to write"))
+
+        _assign_materials(file, product, element.materials, material_cache)
 
         ifcopenshell.api.spatial.assign_container(
             file,
