@@ -572,6 +572,41 @@ class _MassingMetrics:
         )
 
 
+#: Grid the plan outline is snapped to before hashing, in metres. One micron -- the same grid the
+#: mesh dedup uses, and for the same reason: subtracting a corner is not exact in floating point,
+#: so two outlines that differ by an exact translation do not subtract to identical numbers. At a
+#: site coordinate of 500 km that error is around 1e-10 m, which this absorbs and a
+#: nine-decimal-place round does not. It still cannot merge two footprints a millimetre apart.
+PLAN_PRECISION = 1e-6
+
+
+def _snap(value: float) -> int:
+    return int(round(float(value) / PLAN_PRECISION))
+
+
+def _plan_local(
+    outline: Sequence[tuple[float, float]], holes: Sequence[Sequence[tuple[float, float]]]
+) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]], tuple[float, float]]:
+    """Move a footprint to its own plan corner, and say where the corner was.
+
+    Without this a tower duplicated and moved fifty metres is a different shape from the original
+    -- same plate, same storey heights, two meshes -- because the key is built from coordinates
+    that the move changed. The corner goes into the placement instead, which is where a difference
+    that is only a position belongs.
+
+    Holes move with the outline, not to corners of their own: a courtyard is positioned *within*
+    its plate, and normalising it separately would make two plates with the courtyard in different
+    places look identical.
+    """
+    if not outline:
+        return list(outline), [list(hole) for hole in holes], (0.0, 0.0)
+    corner_x = min(x for x, _ in outline)
+    corner_y = min(y for _, y in outline)
+    local = [(x - corner_x, y - corner_y) for x, y in outline]
+    local_holes = [[(x - corner_x, y - corner_y) for x, y in hole] for hole in holes]
+    return local, local_holes, (corner_x, corner_y)
+
+
 def _shape_key(
     outline: Sequence[tuple[float, float]],
     holes: Sequence[Sequence[tuple[float, float]]],
@@ -580,13 +615,16 @@ def _shape_key(
     """A content hash of everything that decides a storey's shape.
 
     Keyed on the geometry rather than on the mass and storey index, which is the whole point: two
-    storeys of the same tower, and two different masses that happen to share a footprint and a
-    storey height, all collapse to one entry.
+    storeys of the same tower, two masses sharing a footprint, and a tower duplicated and moved
+    across the site all collapse to one entry.
+
+    The outline reaching here has already been moved to its own corner by `_plan_local`, so the
+    coordinates are small and the grid below is absolute rather than relative.
     """
     payload = repr(
         (
-            tuple((round(x, 9), round(y, 9)) for x, y in outline),
-            tuple(tuple((round(x, 9), round(y, 9)) for x, y in hole) for hole in holes),
+            tuple((_snap(x), _snap(y)) for x, y in outline),
+            tuple(tuple((_snap(x), _snap(y)) for x, y in hole) for hole in holes),
             round(float(height), 9),
         )
     )
@@ -693,15 +731,19 @@ class _MassingGeometrySource:
                 # Holes belong to the base profile. A per-storey override is its own outline and
                 # `extrude_stories` does not punch the base profile's holes through it.
                 punched = holes if outline is outer else []
-                key = _shape_key(outline, punched, height)
+                local, local_holes, (corner_x, corner_y) = _plan_local(outline, punched)
+                key = _shape_key(local, local_holes, height)
                 if key not in shapes:
-                    mesh = extrude(outline, punched, 0.0, height)
+                    mesh = extrude(local, local_holes, 0.0, height)
                     if not mesh.is_empty:
                         shapes[key] = (mesh.vertices, mesh.faces)
                 if key in shapes:
                     # The same id `_MassingElementSource` costs and `_MassingElementResolver`
                     # anchors. Geometry with its own numbering is geometry nothing else can name.
-                    placements[f"{mass.id}:{index:03d}"] = (key, _translation(0.0, 0.0, elevation))
+                    placements[f"{mass.id}:{index:03d}"] = (
+                        key,
+                        _translation(corner_x, corner_y, elevation),
+                    )
                 elevation += height
         return tuple(signature), shapes, placements
 

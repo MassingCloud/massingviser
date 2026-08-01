@@ -373,11 +373,11 @@ written by the TypeScript implementation opens here unchanged.
 ## Tests
 
 ```bash
-python -m pytest                          # 746, the Python side
+python -m pytest                          # 750, the Python side
 cd web && npm ci && npm run test:all      # 22, the browser side
 ```
 
-**768 tests.** Organised by the claim each defends:
+**772 tests.** Organised by the claim each defends:
 
 | File | Defends |
 |---|---|
@@ -453,11 +453,13 @@ Stated plainly, in the spirit of the repository this is ported from.
 - **IFC writing is tessellated.** Solids go out as `IfcPolygonalFaceSet`, not as swept solids or
   B-reps, because triangles are what the platform holds. Materials are written; types and
   classification are not, because nothing here holds them.
-- **Massing geometry is not instanced across masses.** A tower's repeated floor plate ships once
-  and is placed per storey, and an imported model collapses identical shapes even when they were
-  authored separately -- exactly, on a one-micron grid, so a real difference can never merge. What
-  is not shared is a shape common to two *different* masses; recognising that needs the massing
-  bridge to key on the profile rather than on the mass.
+- **Instancing does not cross the massing/IFC line.** Within massing, a tower's repeated floor
+  plate ships once however many storeys repeat it, and a plate shared by several masses -- or by a
+  tower duplicated and moved across the site -- ships once too, because the footprint is keyed at
+  its own plan corner rather than at its site coordinates. An imported IFC model collapses
+  identical shapes the same way, on the same one-micron grid. What the two do not do is share with
+  *each other*: a massing study and an imported model that describe the same plate send two
+  meshes, because they are two models and nothing joins their geometry.
 - **Rotation is not normalised when deduplicating shapes.** Two identical boxes that differ only by
   a rotation still travel twice. Collapsing them means choosing a canonical orientation, and a box's
   principal axes are degenerate -- any rule for picking them merges some pair that genuinely

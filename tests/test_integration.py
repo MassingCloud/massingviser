@@ -451,3 +451,123 @@ async def test_two_masses_sharing_a_footprint_share_the_plate():
     assert len(source.geometry()) == 6
     assert sum(ref.mesh_count for ref in source.payload_refs()) == 1
     await kernel.stop()
+
+
+async def _plate(kernel, name, origin_x, origin_y, *, depth=12.0, storeys=10):
+    from massingviser.plugins.massing import MASSING_COMMANDS
+
+    points = [
+        (origin_x, origin_y, 0),
+        (origin_x + 20, origin_y, 0),
+        (origin_x + 20, origin_y + depth, 0),
+        (origin_x, origin_y + depth, 0),
+    ]
+    sketched = await kernel.commands.execute(
+        MASSING_COMMANDS.sketch_profile, {"points": points, "name": name}
+    )
+    await kernel.commands.execute(
+        MASSING_COMMANDS.create_mass,
+        {
+            "name": name,
+            "profile_id": sketched.value,
+            "story_count": storeys,
+            "story_height": 3.5,
+        },
+    )
+
+
+def _distinct_meshes(source):
+    return {
+        (ladder[0].payload_id, ladder[0].geometry_index)
+        for ladder in source.geometry().values()
+        if ladder
+    }
+
+
+async def test_the_same_plate_somewhere_else_on_site_is_the_same_plate():
+    """Keyed on absolute coordinates, moving a tower made every storey a new mesh."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _plate(kernel, "A", 0.0, 0.0)
+    await _plate(kernel, "B", 140.0, 75.0)
+    # Real site coordinates, where subtracting a corner is least exact -- the case a
+    # nine-decimal-place round got wrong while looking fine near the origin.
+    await _plate(kernel, "C", 500_000.0, 250_000.0)
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    assert len(source.geometry()) == 30
+    assert len(_distinct_meshes(source)) == 1
+    await kernel.stop()
+
+
+async def test_a_plate_a_millimetre_deeper_is_not_the_same_plate():
+    """The saving is worthless if it merges two footprints that differ."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _plate(kernel, "A", 0.0, 0.0, storeys=2)
+    await _plate(kernel, "B", 200.0, 0.0, depth=12.001, storeys=2)
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    assert len(_distinct_meshes(source)) == 2
+    await kernel.stop()
+
+
+async def test_a_moved_tower_lands_where_its_footprint_says_not_at_the_origin():
+    """The corner comes out of the mesh and has to go into the placement, or the tower stacks."""
+    from massingviser import build_kernel
+    from massingviser.geometry import decode_mesh_batch
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    await _plate(kernel, "A", 0.0, 0.0, storeys=2)
+    await _plate(kernel, "B", 140.0, 75.0, storeys=2)
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    ladders = source.geometry()
+    corners = set()
+    for global_id, ladder in ladders.items():
+        mesh = decode_mesh_batch(source.read(ladder[0].payload_id))[ladder[0].geometry_index]
+        transform = source.transform_of(global_id)
+        corners.add(
+            (
+                round(min(float(v[0]) for v in mesh.vertices) + transform[12], 6),
+                round(min(float(v[1]) for v in mesh.vertices) + transform[13], 6),
+            )
+        )
+    assert corners == {(0.0, 0.0), (140.0, 75.0)}
+    await kernel.stop()
+
+
+async def test_a_courtyard_moves_with_its_plate_rather_than_to_a_corner_of_its_own():
+    """Two plates with the courtyard in different places are two plates, not one."""
+    from massingviser import build_kernel
+    from massingviser.plugins.engine import GeometryPayloadSourceToken
+    from massingviser.plugins.massing import MASSING_COMMANDS, ProfileToken
+
+    kernel = build_kernel()
+    await kernel.start()
+    profiles = kernel.capabilities.get(ProfileToken)
+    for name, hole_x in (("A", 4.0), ("B", 12.0)):
+        sketched = await kernel.commands.execute(
+            MASSING_COMMANDS.sketch_profile,
+            {"points": [(0, 0, 0), (30, 0, 0), (30, 20, 0), (0, 20, 0)], "name": name},
+        )
+        await profiles.add_hole(
+            sketched.value,
+            [(hole_x, 6, 0), (hole_x + 6, 6, 0), (hole_x + 6, 12, 0), (hole_x, 12, 0)],
+        )
+        await kernel.commands.execute(
+            MASSING_COMMANDS.create_mass,
+            {"name": name, "profile_id": sketched.value, "story_count": 2, "story_height": 3.5},
+        )
+
+    source = kernel.capabilities.get(GeometryPayloadSourceToken)
+    assert len(_distinct_meshes(source)) == 2
+    await kernel.stop()
