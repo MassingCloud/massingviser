@@ -36,11 +36,11 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
       "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
           "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
@@ -67,7 +67,7 @@
         0.0,
         0.0,
         0.0,
-        0.0,
+        3.6,
         1.0
       ],
       "propertySets": {
@@ -78,12 +78,12 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-      "geometryIndex": 1,
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+      "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-          "geometryIndex": 1,
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+          "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
         }
@@ -109,7 +109,7 @@
         0.0,
         0.0,
         0.0,
-        0.0,
+        7.2,
         1.0
       ],
       "propertySets": {
@@ -120,12 +120,12 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-      "geometryIndex": 2,
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+      "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-          "geometryIndex": 2,
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+          "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
         }
@@ -151,7 +151,7 @@
         0.0,
         0.0,
         0.0,
-        0.0,
+        10.8,
         1.0
       ],
       "propertySets": {
@@ -162,12 +162,12 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-      "geometryIndex": 3,
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+      "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-          "geometryIndex": 3,
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+          "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
         }
@@ -193,7 +193,7 @@
         0.0,
         0.0,
         0.0,
-        0.0,
+        14.4,
         1.0
       ],
       "propertySets": {
@@ -204,12 +204,12 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-      "geometryIndex": 4,
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+      "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-          "geometryIndex": 4,
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+          "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
         }
@@ -235,7 +235,7 @@
         0.0,
         0.0,
         0.0,
-        0.0,
+        18.0,
         1.0
       ],
       "propertySets": {
@@ -246,12 +246,12 @@
         }
       },
       "relationships": [],
-      "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-      "geometryIndex": 5,
+      "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+      "geometryIndex": 0,
       "geometry": [
         {
-          "payloadId": "1b723c6c9e6156bc3dc65068622b16f1",
-          "geometryIndex": 5,
+          "payloadId": "d8a94c76f3567ca1ef3affda513b4821",
+          "geometryIndex": 0,
           "lod": 0,
           "faceCount": 12
         }
@@ -260,13 +260,13 @@
   ],
   "payloads": [
     {
-      "id": "1b723c6c9e6156bc3dc65068622b16f1",
+      "id": "d8a94c76f3567ca1ef3affda513b4821",
       "role": "geometry",
-      "path": "payloads/1b723c6c9e6156bc3dc65068622b16f1.bin",
+      "path": "payloads/d8a94c76f3567ca1ef3affda513b4821.bin",
       "encoding": "massingviser-mesh/2",
-      "byteLength": 4448,
+      "byteLength": 768,
       "lod": 0,
-      "meshCount": 6
+      "meshCount": 1
     }
   ],
   "realityLayers": [],
